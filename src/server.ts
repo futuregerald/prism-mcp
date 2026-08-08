@@ -77,6 +77,7 @@ import {
   PRISM_HDC_ENABLED,
   PRISM_TASK_ROUTER_ENABLED_ENV,
   PRISM_DARK_FACTORY_ENABLED,
+  PRISM_ENABLE_DASHBOARD,
 } from "./config.js";
 import { startWatchdog, drainAlerts } from "./hivemindWatchdog.js";
 import { startScheduler, startScholarScheduler } from "./backgroundScheduler.js";
@@ -1289,11 +1290,13 @@ export async function startServer() {
   // Deferred to next tick — yields the event loop so the MCP stdio
   // transport processes the initialize handshake before dashboard
   // init spawns child processes (lsof) and awaits storage.
-  setTimeout(() => {
-    startDashboardServer().catch(err => {
-      console.error(`[Dashboard] Mind Palace startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }, 0);
+  if (PRISM_ENABLE_DASHBOARD) {
+    setTimeout(() => {
+      startDashboardServer().catch(err => {
+        console.error(`[Dashboard] Mind Palace startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, 0);
+  }
 
   // ─── v5.3: Hivemind Watchdog ──────────────────────────────
   // Start the server-side health monitor after storage is warm.
