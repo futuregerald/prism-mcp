@@ -10,7 +10,7 @@ import { initTelemetry } from "../utils/telemetry.js";
 import { registerServer, unregisterServer } from "../connectionRegistry.js";
 import { runWithRequestContext } from "../utils/requestContext.js";
 import { performResourceCleanup } from "../lifecycle.js";
-import { releaseDaemonLock, type LockPaths } from "./instanceLock.js";
+import { releaseDaemonLock, claimLockAsSocketOwner, type LockPaths } from "./instanceLock.js";
 import { computeConfigFingerprint } from "../utils/configFingerprint.js";
 import { parsePositiveIntEnv } from "../utils/envInt.js";
 
@@ -31,7 +31,7 @@ interface AdminHello {
 }
 
 const HELLO_MAX_BYTES = 4096;
-const HELLO_TIMEOUT_MS = 5000;
+const HELLO_TIMEOUT_MS = 30_000;
 
 function pauseSocketToProtectUnshiftedBytes(
   socket: net.Socket,
@@ -283,13 +283,17 @@ export async function runDaemonMain(paths: LockPaths): Promise<void> {
   log(`Listening on ${paths.socketPath} (pid ${process.pid})`);
 
   const ownInode = fs.statSync(paths.socketPath).ino;
+  const listeningSince = Date.now();
+  claimLockAsSocketOwner(paths, listeningSince);
   const inodeCheckInterval = setInterval(() => {
     try {
       const currentInode = fs.statSync(paths.socketPath).ino;
       if (currentInode !== ownInode) {
         log("Socket path inode changed under us (takeover race) — shutting down");
         void gracefulShutdown("inode-mismatch");
+        return;
       }
+      if (!shuttingDown) claimLockAsSocketOwner(paths, listeningSince);
     } catch {
       log("Socket path vanished under us — shutting down");
       void gracefulShutdown("socket-missing");

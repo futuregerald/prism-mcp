@@ -67,6 +67,27 @@ describe("daemon single-instance locking (R7)", () => {
     }
   }, 45_000);
 
+  it("the listening daemon reclaims a lock file that another process overwrote", async () => {
+    const proc = spawnDaemon(home, dataDir);
+    spawned.push(proc);
+    const socketPath = getSocketPath(dataDir);
+    await waitForSocket(socketPath, 15_000);
+
+    const lockPath = path.join(dataDir, "prismd.lock");
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid).toBe(proc.pid);
+
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999_999, startedAt: Date.now() - 60_000 }));
+
+    const deadline = Date.now() + 8_000;
+    let reclaimedPid: number | undefined;
+    while (Date.now() < deadline) {
+      try { reclaimedPid = JSON.parse(fs.readFileSync(lockPath, "utf8")).pid; } catch { }
+      if (reclaimedPid === proc.pid) break;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    expect(reclaimedPid).toBe(proc.pid);
+  }, 30_000);
+
   it("breaks a stale lock (foreign/dead pid, startedAt older than 3s) and starts normally", async () => {
     const lockPath = path.join(dataDir, "prismd.lock");
     fs.mkdirSync(dataDir, { recursive: true });

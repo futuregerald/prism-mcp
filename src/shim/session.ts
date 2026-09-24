@@ -15,7 +15,8 @@ export interface ShimSessionOptions {
 
 interface InFlightEntry {
   line: string;
-  sentCount: number;
+  sentOnGeneration: number | null;
+  deathsWhileServing: number;
 }
 
 interface PendingSubscriptionOp {
@@ -45,6 +46,8 @@ export class ShimSession {
   private readonly configFingerprint?: string;
 
   private connected = false;
+  private connectionGeneration = 0;
+  private connectionServing = false;
   private disconnectedAt: number | null = null;
   private initializeRequestRaw: string | null = null;
   private initializedSeen = false;
@@ -124,10 +127,10 @@ export class ShimSession {
       }
 
       if (this.connected) {
-        this.inFlight.set(key, { line, sentCount: 1 });
+        this.inFlight.set(key, { line, sentOnGeneration: this.connectionGeneration, deathsWhileServing: 0 });
         return [{ to: "daemon", line }];
       }
-      this.inFlight.set(key, { line, sentCount: 0 });
+      this.inFlight.set(key, { line, sentOnGeneration: null, deathsWhileServing: 0 });
       return [];
     }
 
@@ -182,6 +185,7 @@ export class ShimSession {
     const isServerRequest = hasId && method !== undefined;
 
     if (hasId && !isServerRequest) {
+      this.connectionServing = true;
       const key = JSON.stringify(parsed.id);
 
       const subscriptionOp = this.pendingSubscriptionOps.get(key);
@@ -211,6 +215,8 @@ export class ShimSession {
   onConnected(): ShimAction[] {
     this.connected = true;
     this.disconnectedAt = null;
+    this.connectionGeneration += 1;
+    this.connectionServing = false;
 
     const actions: ShimAction[] = [];
     const helloPayload: Record<string, unknown> = { v: 1, cwd: this.cwd, clientId: this.clientId };
@@ -231,7 +237,7 @@ export class ShimSession {
     }
 
     for (const [key, entry] of this.inFlight) {
-      if (entry.sentCount >= 2) {
+      if (entry.deathsWhileServing >= 2) {
         this.inFlight.delete(key);
         const id = JSON.parse(key);
         actions.push({
@@ -244,7 +250,7 @@ export class ShimSession {
         });
         continue;
       }
-      entry.sentCount += 1;
+      entry.sentOnGeneration = this.connectionGeneration;
       actions.push({ to: "daemon", line: entry.line });
     }
 
@@ -283,7 +289,13 @@ export class ShimSession {
   }
 
   onDisconnected(nowMs: number): ShimAction[] {
+    if (this.connectionServing) {
+      for (const entry of this.inFlight.values()) {
+        if (entry.sentOnGeneration === this.connectionGeneration) entry.deathsWhileServing += 1;
+      }
+    }
     this.connected = false;
+    this.connectionServing = false;
     this.disconnectedAt = nowMs;
     return [];
   }

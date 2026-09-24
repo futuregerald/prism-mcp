@@ -177,7 +177,7 @@ function removeStaleSpawnClaims(spawnMarkerPath: string, nowMs: number): void {
   }
 }
 
-function maybeSpawnDaemon(dataDir: string): boolean {
+function maybeSpawnDaemon(dataDir: string, onStartupFailure: () => void): boolean {
   const spawnMarkerPath = getSpawnMarkerPath();
   const nowMs = Date.now();
   const key = spawnClaimKey(dataDir, nowMs);
@@ -203,8 +203,9 @@ function maybeSpawnDaemon(dataDir: string): boolean {
     env: process.env,
   });
   const claimPath = `${spawnMarkerPath}.${key}`;
-  child.once("exit", () => {
+  child.once("exit", (code, signal) => {
     try { fs.unlinkSync(claimPath); } catch { }
+    if (signal === null && code !== 0) onStartupFailure();
   });
   child.unref();
   fs.closeSync(logFd);
@@ -372,6 +373,7 @@ async function main(): Promise<void> {
   let spawnBackoffMs = SPAWN_BACKOFF_INITIAL_MS;
   let nextSpawnAttemptAt = 0;
   let consecutiveFailedSpawns = 0;
+  const recordStartupFailure = () => { consecutiveFailedSpawns += 1; };
 
   while (!shuttingDown && !session.isFatal()) {
     try {
@@ -395,19 +397,20 @@ async function main(): Promise<void> {
       if (isConnectFailure(nodeErr)) {
         const now = Date.now();
         if (now >= nextSpawnAttemptAt) {
-          const attempted = maybeSpawnDaemon(dataDir);
+          const attempted = maybeSpawnDaemon(dataDir, recordStartupFailure);
           if (attempted) {
-            consecutiveFailedSpawns += 1;
             nextSpawnAttemptAt = now + spawnBackoffMs;
             spawnBackoffMs = Math.min(spawnBackoffMs * 2, SPAWN_BACKOFF_CAP_MS);
-
-            if (consecutiveFailedSpawns >= STARTUP_FAILURE_THRESHOLD) {
-              const message = `prism daemon failed to start; see ${getLogPath()}`;
-              debugLog(`${consecutiveFailedSpawns} consecutive spawns never produced a listening socket — ${message}`);
-              for (const action of session.failAllPendingWithError(-32003, message)) {
-                writeToStdout(action.line, currentSocket);
-              }
-            }
+          }
+        }
+        if (consecutiveFailedSpawns >= STARTUP_FAILURE_THRESHOLD) {
+          const message = `prism daemon failed to start; see ${getLogPath()}`;
+          const failures = session.failAllPendingWithError(-32003, message);
+          if (failures.length > 0) {
+            debugLog(`${consecutiveFailedSpawns} consecutive daemon starts exited with an error — ${message}`);
+          }
+          for (const action of failures) {
+            writeToStdout(action.line, currentSocket);
           }
         }
       } else {

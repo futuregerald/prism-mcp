@@ -162,6 +162,19 @@ export async function acquireDaemonLock(): Promise<LockResult> {
   return acquireOnce(paths, true);
 }
 
+export function claimLockAsSocketOwner(paths: LockPaths, startedAt: number): void {
+  const current = readLock(paths.lockPath);
+  if (current && current.pid === process.pid) return;
+  const tmpPath = `${paths.lockPath}.${process.pid}.tmp`;
+  const contents: LockFileContents = { pid: process.pid, startedAt };
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(contents), { mode: 0o600 });
+    fs.renameSync(tmpPath, paths.lockPath);
+  } catch {
+    try { fs.unlinkSync(tmpPath); } catch { }
+  }
+}
+
 export function releaseDaemonLock(paths: LockPaths, ownInode: number): void {
   const lock = readLock(paths.lockPath);
   if (lock && lock.pid === process.pid) {

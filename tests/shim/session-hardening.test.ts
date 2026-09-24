@@ -178,11 +178,15 @@ describe("ShimSession — crash-loop replay cap", () => {
     const session = newSession();
     session.onConnected();
 
+    session.onClientLine(req(1, "tools/list"), 0);
+    session.onDaemonLine(resp(1, {}));
     session.onClientLine(req(9, "tools/call", { name: "session_load_context" }), 0);
 
     session.onDisconnected(0);
     const firstReplay = toDaemon(session.onConnected());
     expect(firstReplay.some(l => JSON.parse(l).id === 9)).toBe(true);
+    const reinit = firstReplay.map(l => JSON.parse(l)).find(m => String(m.id).startsWith("prism-shim-reinit-"));
+    session.onDaemonLine(resp(reinit?.id ?? "prism-shim-reinit-1", {}));
 
     session.onDisconnected(0);
     const secondActions = session.onConnected();
@@ -194,6 +198,41 @@ describe("ShimSession — crash-loop replay cap", () => {
     expect(errored).toBeDefined();
     expect(errored.error.code).toBe(-32002);
     expect(errored.error.message).toMatch(/not retried/);
+  });
+});
+
+describe("ShimSession — crash-loop cap ignores daemons that died before answering anything", () => {
+  it("keeps replaying a request across daemons that were killed while still booting", () => {
+    const session = newSession();
+    session.onConnected();
+    session.onClientLine(req(7, "tools/call", { name: "session_save_ledger", arguments: { summary: "s" } }), 0);
+
+    for (let death = 0; death < 5; death++) {
+      session.onDisconnected(0);
+      const actions = session.onConnected();
+      expect(toDaemon(actions).some(l => { try { return JSON.parse(l).id === 7; } catch { return false; } })).toBe(true);
+      expect(toClient(actions).find(m => m.id === 7)).toBeUndefined();
+    }
+  });
+
+  it("still fails a request whose daemon answered other traffic and then died twice", () => {
+    const session = newSession();
+    session.onConnected();
+    session.onClientLine(req(0, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } }), 0);
+    session.onDaemonLine(resp(0, {}));
+    session.onClientLine(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }), 0);
+    session.onClientLine(req(1, "tools/list"), 0);
+    session.onDaemonLine(resp(1, {}));
+    session.onClientLine(req(8, "tools/call", { name: "session_load_context" }), 0);
+
+    session.onDisconnected(0);
+    const replay = toDaemon(session.onConnected()).map(l => JSON.parse(l));
+    const reinit = replay.find(m => String(m.id).startsWith("prism-shim-reinit-"));
+    session.onDaemonLine(resp(reinit.id, {}));
+
+    session.onDisconnected(0);
+    const final = toClient(session.onConnected());
+    expect(final.find(m => m.id === 8)?.error?.code).toBe(-32002);
   });
 });
 
