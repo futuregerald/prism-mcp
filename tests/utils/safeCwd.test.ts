@@ -36,6 +36,34 @@ describe("git helpers with a removed working directory", () => {
   });
 });
 
+describe("clientWorkingDirectory", () => {
+  it("uses the process cwd outside any daemon client context", async () => {
+    const { clientWorkingDirectory } = await import("../../src/utils/requestContext.js");
+    expect(clientWorkingDirectory()).toBe(process.cwd());
+  });
+
+  it("is undefined for a daemon client that sent no cwd, even though the daemon itself has one", async () => {
+    const { clientWorkingDirectory, runWithRequestContext } = await import("../../src/utils/requestContext.js");
+    expect(runWithRequestContext({ clientId: "c" }, () => clientWorkingDirectory())).toBeUndefined();
+  });
+
+  it("ignores a relative cwd from a daemon client", async () => {
+    const { clientWorkingDirectory, runWithRequestContext } = await import("../../src/utils/requestContext.js");
+    expect(runWithRequestContext({ clientId: "c", cwd: "relative/dir" }, () => clientWorkingDirectory())).toBeUndefined();
+  });
+
+  it("uses an absolute cwd from a daemon client", async () => {
+    const { clientWorkingDirectory, runWithRequestContext } = await import("../../src/utils/requestContext.js");
+    expect(runWithRequestContext({ clientId: "c", cwd: "/tmp" }, () => clientWorkingDirectory())).toBe("/tmp");
+  });
+
+  it("getCurrentGitState reports no repo for a daemon client without a cwd, not the daemon's own repo", async () => {
+    const { runWithRequestContext } = await import("../../src/utils/requestContext.js");
+    const state = await runWithRequestContext({ clientId: "c" }, () => getCurrentGitState());
+    expect(state).toEqual({ isRepo: false, branch: null, commitSha: null });
+  });
+});
+
 describe("ShimSession hello without a working directory", () => {
   it("leaves cwd out of the hello", () => {
     const session = new ShimSession({ clientId: "c1", cwd: undefined, mutatingTools: [], requestTimeoutMs: 1000 });

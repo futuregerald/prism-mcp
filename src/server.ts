@@ -1,4 +1,6 @@
+import { homedir } from "node:os";
 import { shouldDelegateToSharedDaemon } from "./utils/sharedDaemonMode.js";
+import { safeCwd } from "./utils/safeCwd.js";
 
 // Only auto-start when this module is executed directly.
 // IMPORTANT: npm install -g creates a symlink like /usr/local/bin/prism-mcp-server
@@ -27,6 +29,7 @@ if (isDirectExecution) {
   if (delegate) {
     await import("./shim.js");
   } else {
+    if (!safeCwd()) process.chdir(homedir());
     const { startServer } = await import("./mcpServer.js");
     startServer().catch(exitWithFatalError);
   }

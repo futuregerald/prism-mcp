@@ -20,11 +20,11 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
-import { safeCwd } from "./safeCwd.js";
+
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { isAbsolute } from "path";
-import { requestContext } from "./requestContext.js";
+import { clientWorkingDirectory } from "./requestContext.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,7 +35,7 @@ export interface GitState {
 }
 
 function resolveProjectPath(projectPath: string | undefined): string | undefined {
-  return typeof projectPath === "string" && isAbsolute(projectPath) ? projectPath : safeCwd();
+  return typeof projectPath === "string" && isAbsolute(projectPath) ? projectPath : undefined;
 }
 
 /**
@@ -43,7 +43,7 @@ function resolveProjectPath(projectPath: string | undefined): string | undefined
  * Returns { isRepo: false } gracefully if not a Git repo.
  */
 export async function getCurrentGitState(
-  projectPath: string | undefined = requestContext()?.cwd ?? safeCwd()
+  projectPath: string | undefined = clientWorkingDirectory()
 ): Promise<GitState> {
   const cwd = resolveProjectPath(projectPath);
   if (!cwd) return { isRepo: false, branch: null, commitSha: null };
@@ -76,7 +76,7 @@ export async function getCurrentGitState(
  */
 export async function getGitDrift(
   oldSha: string,
-  projectPath: string | undefined = requestContext()?.cwd ?? safeCwd()
+  projectPath: string | undefined = clientWorkingDirectory()
 ): Promise<string | null> {
   // SECURITY: Validate SHA format before passing to git.
   // Without this, a corrupted DB entry like "; rm -rf /" would be

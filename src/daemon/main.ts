@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as net from "node:net";
+import * as path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -133,7 +134,7 @@ function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
               socket.unshift(rest);
             }
             resolve({
-              cwd: parsed.prism_hello.cwd,
+              cwd: typeof parsed.prism_hello.cwd === "string" && path.isAbsolute(parsed.prism_hello.cwd) ? parsed.prism_hello.cwd : undefined,
               clientId: parsed.prism_hello.clientId,
               configFingerprint: parsed.prism_hello.configFingerprint,
             });

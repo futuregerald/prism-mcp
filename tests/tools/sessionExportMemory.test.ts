@@ -683,6 +683,17 @@ describe("sessionExportMemoryHandler — session_export_memory", () => {
       expect(text).toContain(fake);
     });
 
+    it("a relative output_dir from a daemon client with no working directory is refused, not resolved against the daemon's directory", async () => {
+      const { runWithRequestContext } = await import("../../src/utils/requestContext.js");
+      const result = await runWithRequestContext({ clientId: "client-without-cwd" }, () =>
+        sessionExportMemoryHandler({ project: "test-project", format: "json", output_dir: "exports" })
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text as string).toMatch(/relative path.*no working directory/);
+      expect(storage.getLedgerEntries).not.toHaveBeenCalled();
+    });
+
     it("getLedgerEntries throws → isError=true with error message, never throws", async () => {
       storage.getLedgerEntries.mockRejectedValue(new Error("DB connection refused"));
 
