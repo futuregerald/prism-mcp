@@ -43,7 +43,7 @@
  */
 
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
-import type { LLMProvider } from "../provider.js";
+import type { LLMProvider, EmbeddingPurpose } from "../provider.js";
 import { getTracer } from "../../telemetry.js";
 
 export class TracingLLMProvider implements LLMProvider {
@@ -55,6 +55,10 @@ export class TracingLLMProvider implements LLMProvider {
    * @see constructor for assignment logic
    */
   generateImageDescription?: LLMProvider["generateImageDescription"];
+
+  get recommendedSimilarityThreshold(): number | undefined {
+    return this.inner.recommendedSimilarityThreshold;
+  }
 
   /**
    * @param inner        The actual LLM adapter (Gemini, OpenAI, or Anthropic).
@@ -160,7 +164,7 @@ export class TracingLLMProvider implements LLMProvider {
 
   // ── generateEmbedding ─────────────────────────────────────────────────────
 
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(text: string, purpose?: EmbeddingPurpose): Promise<number[]> {
     /**
      * Span: llm.generate_embedding
      *
@@ -180,7 +184,7 @@ export class TracingLLMProvider implements LLMProvider {
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
-        const result = await this.inner.generateEmbedding(text);
+        const result = await this.inner.generateEmbedding(text, purpose);
         span.setAttribute("llm.embed_dim", result.length);
         span.setStatus({ code: SpanStatusCode.OK });
         return result;

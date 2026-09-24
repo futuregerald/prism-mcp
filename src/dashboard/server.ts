@@ -986,7 +986,7 @@ return false;}
           const project = url.searchParams.get("project") || null;
           const limit = Number(url.searchParams.get("limit")) || 10;
           const offset = Number(url.searchParams.get("offset")) || 0;
-          const similarityThreshold = parseFloat(url.searchParams.get("threshold") || "0.6");
+          const requestedThreshold = url.searchParams.get("threshold");
           const contextBoost = url.searchParams.get("boost") === "true";
 
           const s = await getStorageSafe();
@@ -1010,7 +1010,8 @@ return false;}
             return res.end(JSON.stringify({ error: "LLM Provider not configured for semantic search. Configure an embedding provider in the Mind Palace dashboard." }));
           }
 
-          const queryEmbedding = await llm.generateEmbedding(queryText);
+          const queryEmbedding = await llm.generateEmbedding(queryText, "query");
+          const similarityThreshold = requestedThreshold ? parseFloat(requestedThreshold) : (llm.recommendedSimilarityThreshold ?? 0.6);
 
           // We query limit + offset, then slice manually since the storage
           // layer interface limit parameter doesn't natively expose offset.

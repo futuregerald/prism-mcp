@@ -361,8 +361,7 @@ export const SESSION_SEARCH_MEMORY_TOOL: Tool = {
       },
       similarity_threshold: {
         type: "number",
-        description: "Minimum similarity score 0-1 (default: 0.7). Higher = more relevant, fewer results.",
-        default: 0.7,
+        description: "Minimum similarity score 0-1. Higher = more relevant, fewer results. Default depends on the embedding provider: 0.5 for the local model, 0.7 otherwise.",
       },
       // Phase 1: Explainability — when true, appends a MemoryTrace JSON
       // object as content[1] in the response array. For semantic search,
@@ -1198,7 +1197,10 @@ export const DEEP_STORAGE_PURGE_TOOL: Tool = {
     "that already have TurboQuant compressed blobs, reclaiming ~90% of vector storage. " +
     "Only affects entries older than the specified threshold (default: 30 days, minimum: 7). " +
     "Entries without compressed blobs are NEVER touched. " +
-    "Use dry_run=true to preview the impact before executing.\n\n" +
+    "Use dry_run=true to preview the impact before executing. " +
+    "On local SQLite, purged entries drop out of semantic search (session_search_memory) until they are re-embedded, " +
+    "so the scheduled purge is off unless PRISM_DEEP_PURGE_ENABLED=true. " +
+    "It only frees vector storage and deletes no memory content, so it is not a retention or privacy control.\n\n" +
     "**When to use:** After running TurboQuant backfill (session_backfill_embeddings), " +
     "call this tool to reclaim disk space from legacy float32 vectors that are no longer " +
     "needed for search.\n\n" +

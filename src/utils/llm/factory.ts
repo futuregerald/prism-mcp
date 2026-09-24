@@ -128,6 +128,7 @@ export function getLLMProvider(): LLMProvider {
     const composed: LLMProvider = {
       generateText:      textAdapter.generateText.bind(textAdapter),
       generateEmbedding: embedAdapter.generateEmbedding.bind(embedAdapter),
+      recommendedSimilarityThreshold: embedAdapter.recommendedSimilarityThreshold,
     };
 
     // Pass VLM support through from the text adapter if it exists.

@@ -1630,7 +1630,7 @@ export class SqliteStorage implements StorageBackend {
         }));
         
         const { applySpreadingActivation } = await import("../memory/spreadingActivation.js");
-        const activated = await applySpreadingActivation(this.db, mappedAnchors, params.activation, params.userId);
+        const activated = await applySpreadingActivation(this.db, mappedAnchors, params.activation, params.userId, params.project);
         return { count: activated.length, results: activated };
       }
 
@@ -1720,7 +1720,7 @@ export class SqliteStorage implements StorageBackend {
       }));
       
       const { applySpreadingActivation } = await import("../memory/spreadingActivation.js");
-      const activated = await applySpreadingActivation(this.db, mappedAnchors, params.activation, params.userId);
+      const activated = await applySpreadingActivation(this.db, mappedAnchors, params.activation, params.userId, params.project);
       return { count: activated.length, results: activated };
     }
 
@@ -1789,7 +1789,7 @@ export class SqliteStorage implements StorageBackend {
 
       if (params.activation?.enabled) {
         const { applySpreadingActivation } = await import("../memory/spreadingActivation.js");
-        return applySpreadingActivation(this.db, baseResults, params.activation, params.userId);
+        return applySpreadingActivation(this.db, baseResults, params.activation, params.userId, params.project);
       }
 
       return baseResults;
@@ -1911,7 +1911,7 @@ export class SqliteStorage implements StorageBackend {
 
         if (params.activation?.enabled) {
           const { applySpreadingActivation } = await import("../memory/spreadingActivation.js");
-          return applySpreadingActivation(this.db, baseResults, params.activation, params.userId);
+          return applySpreadingActivation(this.db, baseResults, params.activation, params.userId, params.project);
         }
 
         return baseResults;

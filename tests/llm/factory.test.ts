@@ -72,6 +72,7 @@ vi.mock("../../src/utils/llm/adapters/voyage.js", () => ({
 vi.mock("../../src/utils/llm/adapters/local.js", () => ({
   LocalEmbeddingAdapter: vi.fn(function (this: any) {
     this.generateEmbedding = vi.fn();
+    this.recommendedSimilarityThreshold = 0.5;
     this.generateText = vi.fn().mockRejectedValue(
       new Error("LocalEmbeddingAdapter does not support text generation")
     );
@@ -251,6 +252,29 @@ describe("LLM Provider Factory — Split Architecture", () => {
     expect(mockLocalEmbeddingAdapter).toHaveBeenCalledOnce();
     expect(GeminiAdapter).not.toHaveBeenCalled();
     infoSpy.mockRestore();
+  });
+
+  it("exposes the embedding adapter's recommended similarity threshold through the provider", () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockProviders("none", "local");
+    expect(getLLMProvider().recommendedSimilarityThreshold).toBe(0.5);
+    infoSpy.mockRestore();
+  });
+
+  it("passes the embedding purpose through the tracing wrapper to the local adapter", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockProviders("none", "local");
+    const provider = getLLMProvider();
+    const localInstance = mockLocalEmbeddingAdapter.mock.instances[0] as unknown as { generateEmbedding: ReturnType<typeof vi.fn> };
+    localInstance.generateEmbedding.mockResolvedValue([0.1, 0.2]);
+    await provider.generateEmbedding("where is the lock file", "query");
+    expect(localInstance.generateEmbedding).toHaveBeenCalledWith("where is the lock file", "query");
+    infoSpy.mockRestore();
+  });
+
+  it("leaves the recommended similarity threshold unset for providers that do not recommend one", () => {
+    mockProviders("gemini", "voyage");
+    expect(getLLMProvider().recommendedSimilarityThreshold).toBeUndefined();
   });
 
   // ── Singleton ─────────────────────────────────────────────────────────────

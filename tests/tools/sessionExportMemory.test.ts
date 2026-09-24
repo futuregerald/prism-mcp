@@ -98,6 +98,7 @@ vi.mock("../../src/config.js", () => ({
   PRISM_USER_ID:          "test-user-id",
   SESSION_MEMORY_ENABLED: true,
   PRISM_ENABLE_HIVEMIND:  false,
+  PRISM_DEEP_PURGE_ENABLED: false,
   PRISM_AUTO_CAPTURE:     false,
   PRISM_CAPTURE_PORTS:    [],
   GOOGLE_API_KEY:         "",

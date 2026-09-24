@@ -933,7 +933,7 @@ If Cursor (Agent A) and Claude Desktop (Agent B) try to update a Mem0 or standar
 AI memory is a black box. Developers hate black boxes. Prism exports memory directly into an **Obsidian/Logseq-compatible Markdown Vault** with YAML frontmatter and `[[Wikilinks]]`. Neither Mem0 nor Zep do this.
 
 #### 5. Self-Cleaning & Self-Optimizing
-If you use a standard memory tool long enough, it clogs the LLM's context window with thousands of obsolete tokens. Prism runs an autonomous [Background Scheduler](src/backgroundScheduler.ts) that Ebbinghaus-decays older memories, auto-compacts session histories into dense summaries, and deep-purges high-precision vectors — saving ~90% of disk space automatically.
+If you use a standard memory tool long enough, it clogs the LLM's context window with thousands of obsolete tokens. Prism runs an autonomous [Background Scheduler](src/backgroundScheduler.ts) that Ebbinghaus-decays older memories, auto-compacts session histories into dense summaries, and can deep-purge high-precision vectors to save disk space (off by default on SQLite, because purged entries drop out of semantic search; set `PRISM_DEEP_PURGE_ENABLED=true` to schedule it).
 
 #### 6. Anti-Sycophancy — The AI That Grades Its Own Homework (v7.4)
 Every other AI coding pipeline has a fatal flaw: it asks the same model that wrote the code whether the code is correct. **Of course it says yes.** Prism's Dark Factory solves this with a walled-off Adversarial Evaluator that is explicitly prompted to be hostile and strict. It operates on a pre-committed rubric and cannot fail the Generator without providing exact file/line receipts. Failed evaluations feed the critique back into the Generator's retry prompt — eliminating blind retries. No other memory or pipeline tool does this.
@@ -1153,6 +1153,7 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 | `PRISM_DASHBOARD_PORT` | No | Dashboard port when enabled (default: `3000`) |
 | `PRISM_SCHEDULER_ENABLED` | No | `"false"` to disable background maintenance (default: enabled) |
 | `PRISM_SCHEDULER_INTERVAL_MS` | No | Maintenance interval in ms (default: `43200000` = 12h) |
+| `PRISM_DEEP_PURGE_ENABLED` | No | Run the scheduled deep purge of float32 vectors (default: `false`) |
 | `PRISM_SCHOLAR_ENABLED` | No | `"true"` to enable Web Scholar pipeline |
 | `PRISM_SCHOLAR_INTERVAL_MS` | No | Scholar interval in ms (default: `0` = manual only) |
 | `PRISM_SCHOLAR_TOPICS` | No | Comma-separated research topics (default: `"ai,agents"`) |
