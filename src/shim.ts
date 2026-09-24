@@ -7,10 +7,14 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { ShimSession, type ShimAction } from "./shim/session.js";
-import { SHIM_MUTATING_TOOLS } from "./shim/mutatingTools.js";
+import { MUTATING_TOOLS } from "./tools/mutatingTools.js";
 import { makeLineSplitter, extractParseableId } from "./shim/lineSplitter.js";
 import { getSocketPath, getSpawnMarkerPath, getLogPath, openDaemonLogFd } from "./shim/dataDir.js";
 import { getPrismDataDir } from "./shim/dataDir.js";
+import { readLock, isPidAlive, LOCK_PID_ALIVE_WAIT_MS } from "./daemon/instanceLock.js";
+import { checkExplicitSocketPath } from "./utils/dataDir.js";
+import { computeConfigFingerprint } from "./utils/configFingerprint.js";
+import { parsePositiveIntEnv } from "./utils/envInt.js";
 
 const DEBUG = process.env.PRISM_SHIM_DEBUG === "1";
 
@@ -36,12 +40,27 @@ function resumeStdinIfPaused(): void {
   }
 }
 
+let stdoutDrainListenerPending: net.Socket | null = null;
+
 function writeToStdout(line: string, throttleSource: net.Socket | null): void {
   const ok = process.stdout.write(line + "\n");
   if (!ok && throttleSource) {
     throttleSource.pause();
-    process.stdout.once("drain", () => throttleSource.resume());
+    if (!stdoutDrainListenerPending) {
+      stdoutDrainListenerPending = throttleSource;
+      process.stdout.once("drain", () => {
+        const source = stdoutDrainListenerPending;
+        stdoutDrainListenerPending = null;
+        source?.resume();
+      });
+    }
   }
+}
+
+let socketDrainListenerPending = false;
+
+function resetSocketDrainListenerState(): void {
+  socketDrainListenerPending = false;
 }
 
 function writeToSocket(socket: net.Socket, line: string): void {
@@ -49,29 +68,65 @@ function writeToSocket(socket: net.Socket, line: string): void {
   debugLog(`writeToSocket ok=${ok} len=${line.length}`);
   if (!ok) {
     pauseStdinForSocket();
-    socket.once("drain", resumeStdinIfPaused);
+    if (!socketDrainListenerPending) {
+      socketDrainListenerPending = true;
+      socket.once("drain", () => {
+        socketDrainListenerPending = false;
+        resumeStdinIfPaused();
+      });
+    }
   }
+}
+
+function tryParseJson(line: string): any {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractRequestId(line: string): unknown {
+  const parsed = tryParseJson(line);
+  if (
+    parsed
+    && typeof parsed === "object"
+    && Object.prototype.hasOwnProperty.call(parsed, "id")
+    && parsed.id !== undefined
+    && typeof parsed.method === "string"
+  ) {
+    return parsed.id;
+  }
+  return undefined;
+}
+
+function runSocketRefusedMode(reason: string): void {
+  debugLog(`refusing PRISM_SOCKET: ${reason}`);
+  const message = `prism daemon refused: PRISM_SOCKET is unsafe — ${reason}`;
+
+  const onStdinLine = makeLineSplitter(
+    line => {
+      if (!line.trim()) return;
+      const id = extractRequestId(line);
+      if (id === undefined) return;
+      writeToStdout(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32010, message },
+      }), null);
+    },
+    () => { }
+  );
+
+  process.stdin.on("data", onStdinLine);
+  process.stdin.on("end", () => process.exit(1));
 }
 
 const DAEMON_BOOT_GRACE_MS = 3000;
 const SPAWN_CLAIM_TTL_MS = 10000;
-const LOCK_PID_ALIVE_WAIT_MS = 30_000;
 
 function readDaemonLock(dataDir: string): { pid: number; startedAt: number } | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(dataDir, "prismd.lock"), "utf8"));
-    if (typeof parsed?.pid === "number" && typeof parsed?.startedAt === "number") return parsed;
-  } catch { }
-  return null;
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return readLock(path.join(dataDir, "prismd.lock"));
 }
 
 function spawnClaimKey(dataDir: string, nowMs: number): string | null {
@@ -122,17 +177,17 @@ function removeStaleSpawnClaims(spawnMarkerPath: string, nowMs: number): void {
   }
 }
 
-function maybeSpawnDaemon(dataDir: string): void {
+function maybeSpawnDaemon(dataDir: string): boolean {
   const spawnMarkerPath = getSpawnMarkerPath();
   const nowMs = Date.now();
   const key = spawnClaimKey(dataDir, nowMs);
   if (key === null) {
     debugLog("skipping daemon spawn — a daemon is still booting or its pid is still alive");
-    return;
+    return false;
   }
   if (!claimSpawn(spawnMarkerPath, key, nowMs)) {
     debugLog(`skipping daemon spawn — another shim already claimed respawn for ${key}`);
-    return;
+    return false;
   }
   removeStaleSpawnClaims(spawnMarkerPath, nowMs);
 
@@ -147,8 +202,13 @@ function maybeSpawnDaemon(dataDir: string): void {
     cwd: dataDir,
     env: process.env,
   });
+  const claimPath = `${spawnMarkerPath}.${key}`;
+  child.once("exit", () => {
+    try { fs.unlinkSync(claimPath); } catch { }
+  });
   child.unref();
   fs.closeSync(logFd);
+  return true;
 }
 
 function isConnectFailure(err: NodeJS.ErrnoException): boolean {
@@ -177,6 +237,7 @@ function connectSocket(socketPath: string): Promise<net.Socket> {
 }
 
 function handleConnection(socket: net.Socket, session: ShimSession): Promise<void> {
+  resetSocketDrainListenerState();
   return new Promise(resolve => {
     const dispatch = (actions: ShimAction[]) => {
       for (const action of actions) {
@@ -195,8 +256,12 @@ function handleConnection(socket: net.Socket, session: ShimSession): Promise<voi
         if (!line.trim()) return;
         dispatch(session.onDaemonLine(line));
       },
-      () => {
+      discarded => {
         debugLog("daemon line exceeded max size — reconnecting");
+        const id = extractParseableId(discarded.toString("utf8"));
+        if (id !== null) {
+          dispatch(session.failInFlightRequest(id, -32004, "prism daemon response exceeded the maximum line size for this request; not retried"));
+        }
         socket.destroy();
       }
     );
@@ -220,17 +285,26 @@ function handleConnection(socket: net.Socket, session: ShimSession): Promise<voi
 }
 
 async function main(): Promise<void> {
+  if (process.env.PRISM_SOCKET) {
+    const check = checkExplicitSocketPath(process.env.PRISM_SOCKET);
+    if (!check.ok) {
+      runSocketRefusedMode(check.reason ?? "PRISM_SOCKET directory is not safe");
+      return;
+    }
+  }
+
   const dataDir = getPrismDataDir();
   const socketPath = getSocketPath();
   const clientId = crypto.randomUUID();
   const cwd = process.cwd();
-  const requestTimeoutMs = parseInt(process.env.PRISM_SHIM_REQUEST_TIMEOUT_MS || "120000", 10);
+  const requestTimeoutMs = parsePositiveIntEnv(process.env.PRISM_SHIM_REQUEST_TIMEOUT_MS, 120000);
 
   const session = new ShimSession({
     clientId,
     cwd,
-    mutatingTools: SHIM_MUTATING_TOOLS,
+    mutatingTools: MUTATING_TOOLS,
     requestTimeoutMs,
+    configFingerprint: computeConfigFingerprint(),
   });
 
   let currentSocket: net.Socket | null = null;
@@ -290,12 +364,23 @@ async function main(): Promise<void> {
     socket.end();
   });
 
+  const SPAWN_BACKOFF_INITIAL_MS = 1000;
+  const SPAWN_BACKOFF_CAP_MS = 30_000;
+  const STARTUP_FAILURE_THRESHOLD = 3;
+
   let backoffMs = 50;
-  while (!shuttingDown) {
+  let spawnBackoffMs = SPAWN_BACKOFF_INITIAL_MS;
+  let nextSpawnAttemptAt = 0;
+  let consecutiveFailedSpawns = 0;
+
+  while (!shuttingDown && !session.isFatal()) {
     try {
       const socket = await connectSocket(socketPath);
       currentSocket = socket;
       resumeStdinIfPaused();
+      spawnBackoffMs = SPAWN_BACKOFF_INITIAL_MS;
+      nextSpawnAttemptAt = 0;
+      consecutiveFailedSpawns = 0;
       const connectedAt = Date.now();
       debugLog("connected to daemon socket");
       await handleConnection(socket, session);
@@ -308,7 +393,23 @@ async function main(): Promise<void> {
       currentSocket = null;
       const nodeErr = err as NodeJS.ErrnoException;
       if (isConnectFailure(nodeErr)) {
-        maybeSpawnDaemon(dataDir);
+        const now = Date.now();
+        if (now >= nextSpawnAttemptAt) {
+          const attempted = maybeSpawnDaemon(dataDir);
+          if (attempted) {
+            consecutiveFailedSpawns += 1;
+            nextSpawnAttemptAt = now + spawnBackoffMs;
+            spawnBackoffMs = Math.min(spawnBackoffMs * 2, SPAWN_BACKOFF_CAP_MS);
+
+            if (consecutiveFailedSpawns >= STARTUP_FAILURE_THRESHOLD) {
+              const message = `prism daemon failed to start; see ${getLogPath()}`;
+              debugLog(`${consecutiveFailedSpawns} consecutive spawns never produced a listening socket — ${message}`);
+              for (const action of session.failAllPendingWithError(-32003, message)) {
+                writeToStdout(action.line, currentSocket);
+              }
+            }
+          }
+        }
       } else {
         debugLog(`connect error (retrying): ${nodeErr.code || nodeErr.message}`);
       }

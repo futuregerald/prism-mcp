@@ -28,7 +28,7 @@ export function makeDaemonEnv(home: string, dataDir: string, overrides: DaemonEn
     PRISM_DATA_DIR: dataDir,
     PRISM_STORAGE: "local",
     PRISM_SCHEDULER_ENABLED: "false",
-    PRISM_DAEMON_IDLE_EXIT_MS: "0",
+    PRISM_DAEMON_IDLE_EXIT_MS: "60000",
     PRISM_ENABLE_HIVEMIND: "false",
     PRISM_ENABLE_DASHBOARD: "false",
     ...overrides,

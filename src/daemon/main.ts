@@ -11,14 +11,19 @@ import { registerServer, unregisterServer } from "../connectionRegistry.js";
 import { runWithRequestContext } from "../utils/requestContext.js";
 import { performResourceCleanup } from "../lifecycle.js";
 import { releaseDaemonLock, type LockPaths } from "./instanceLock.js";
+import { computeConfigFingerprint } from "../utils/configFingerprint.js";
+import { parsePositiveIntEnv } from "../utils/envInt.js";
 
 function log(msg: string): void {
   console.error(`[prism-daemon] ${msg}`);
 }
 
+const OWN_CONFIG_FINGERPRINT = computeConfigFingerprint();
+
 interface HelloResult {
   cwd?: string;
   clientId?: string;
+  configFingerprint?: string;
 }
 
 interface AdminHello {
@@ -42,13 +47,26 @@ function resumeSocketAfterTransportWired(socket: net.Socket): void {
   socket.resume();
 }
 
-async function waitForStorageReady(): Promise<void> {
+const STORAGE_READY_TIMEOUT_MS = 30_000;
+
+async function waitForStorageReady(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   let promise = getStorageReadyPromise();
   while (!promise) {
+    if (Date.now() >= deadline) return false;
     await new Promise(resolve => setTimeout(resolve, 10));
     promise = getStorageReadyPromise();
   }
-  await promise;
+
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return false;
+
+  const TIMEOUT = Symbol("storage-ready-timeout");
+  const result = await Promise.race([
+    promise.then(() => true as const),
+    new Promise<typeof TIMEOUT>(resolve => setTimeout(() => resolve(TIMEOUT), remainingMs)),
+  ]);
+  return result !== TIMEOUT;
 }
 
 function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
@@ -114,7 +132,11 @@ function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
             if (rest.length > 0) {
               socket.unshift(rest);
             }
-            resolve({ cwd: parsed.prism_hello.cwd, clientId: parsed.prism_hello.clientId });
+            resolve({
+              cwd: parsed.prism_hello.cwd,
+              clientId: parsed.prism_hello.clientId,
+              configFingerprint: parsed.prism_hello.configFingerprint,
+            });
             return;
           }
         } catch {
@@ -138,10 +160,6 @@ async function handleConnection(
   socket: net.Socket,
   requestShutdown: (reason: string) => void
 ): Promise<void> {
-  socket.pause();
-  await waitForStorageReady();
-  socket.resume();
-
   let hello: HelloResult | AdminHello;
   try {
     hello = await readHello(socket);
@@ -158,6 +176,19 @@ async function handleConnection(
     } else {
       socket.destroy();
     }
+    return;
+  }
+
+  const storageReady = await waitForStorageReady(STORAGE_READY_TIMEOUT_MS);
+  if (!storageReady) {
+    log("Closing MCP connection: storage was not ready within the startup deadline");
+    socket.destroy();
+    return;
+  }
+
+  if (hello.configFingerprint !== undefined && hello.configFingerprint !== OWN_CONFIG_FINGERPRINT) {
+    socket.write(JSON.stringify({ prism_hello_error: { reason: "config_mismatch" } }) + "\n");
+    socket.end();
     return;
   }
 
@@ -187,7 +218,7 @@ async function handleConnection(
 
 export async function runDaemonMain(paths: LockPaths): Promise<void> {
   const connections = new Set<net.Socket>();
-  const idleExitMs = parseInt(process.env.PRISM_DAEMON_IDLE_EXIT_MS ?? "1800000", 10);
+  const idleExitMs = parsePositiveIntEnv(process.env.PRISM_DAEMON_IDLE_EXIT_MS, 1_800_000);
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
 

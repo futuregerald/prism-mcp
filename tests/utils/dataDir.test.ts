@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, statSync, lstatSync, rmSync, mkdtempSync, mkdirSync, chmodSync, symlinkSync } from "fs";
+import { existsSync, statSync, realpathSync, rmSync, mkdtempSync, mkdirSync, chmodSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -91,17 +91,42 @@ describe("getPrismDataDir", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("refuses a data dir path that is a symlink", async () => {
+  it("resolves a symlinked data dir to its target and tightens the target's permissions", async () => {
     const base = mkdtempSync(join(tmpdir(), "prism-datadir-symlink-"));
     const real = join(base, "real");
     mkdirSync(real, { mode: 0o700 });
+    chmodSync(real, 0o755);
     const link = join(base, "link");
     symlinkSync(real, link);
     process.env.PRISM_DATA_DIR = link;
 
     const { getPrismDataDir } = await import("../../src/utils/dataDir.js");
-    expect(() => getPrismDataDir()).toThrow(/symlink/);
+    const result = getPrismDataDir();
+
+    expect(result).toBe(link);
+    expect(statSync(realpathSync(link)).mode & 0o777).toBe(0o700);
 
     rmSync(base, { recursive: true, force: true });
+  });
+
+  it("refuses a resolved data dir that is not owned by the current user", async () => {
+    const { isOwnedByCurrentUser } = await import("../../src/utils/dataDir.js");
+
+    expect(isOwnedByCurrentUser(-1)).toBe(false);
+
+    if (typeof process.getuid === "function") {
+      expect(isOwnedByCurrentUser(process.getuid())).toBe(true);
+    }
+  });
+
+  it("treats ownership as satisfied where process.getuid is unavailable", async () => {
+    const processWithoutGetuid = process as { getuid?: () => number };
+    const originalGetuid = processWithoutGetuid.getuid;
+    delete processWithoutGetuid.getuid;
+
+    const { isOwnedByCurrentUser } = await import("../../src/utils/dataDir.js");
+    expect(isOwnedByCurrentUser(-1)).toBe(true);
+
+    processWithoutGetuid.getuid = originalGetuid;
   });
 });

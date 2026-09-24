@@ -489,8 +489,6 @@ function createAuthTestServer(opts: {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Credentials", "true");
       }
-    } else {
-      res.setHeader("Access-Control-Allow-Origin", "*");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -840,11 +838,11 @@ describe("HTTP Auth Disabled", () => {
     expect(res.body).not.toContain("Login Page");
   });
 
-  it("Auth disabled — CORS uses wildcard *", async () => {
+  it("Auth disabled — sends no Access-Control-Allow-Origin header, even with an Origin header present", async () => {
     const res = await httpRequest(port, "OPTIONS", "/api/projects", {
       headers: { origin: "http://localhost:8080" },
     });
     expect(res.status).toBe(204);
-    expect(res.headers["access-control-allow-origin"]).toBe("*");
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });

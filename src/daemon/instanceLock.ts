@@ -44,7 +44,7 @@ function probeSocket(socketPath: string, timeoutMs = 500): Promise<boolean> {
   });
 }
 
-function readLock(lockPath: string): LockFileContents | null {
+export function readLock(lockPath: string): LockFileContents | null {
   try {
     const raw = fs.readFileSync(lockPath, "utf8");
     const parsed = JSON.parse(raw);
@@ -76,7 +76,7 @@ async function waitForSocket(socketPath: string, maxWaitMs: number): Promise<boo
   return false;
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -85,7 +85,7 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-const LOCK_PID_ALIVE_WAIT_MS = 30_000;
+export const LOCK_PID_ALIVE_WAIT_MS = 30_000;
 
 async function waitForPidExitOrSocket(
   pid: number,
@@ -120,6 +120,9 @@ async function acquireOnce(paths: LockPaths, allowRetryOnEexist: boolean): Promi
     if (isPidAlive(lock.pid)) {
       const outcome = await waitForPidExitOrSocket(lock.pid, socketPath, LOCK_PID_ALIVE_WAIT_MS);
       if (outcome === "socket") {
+        return { alreadyRunning: true, paths };
+      }
+      if (outcome === "timeout" && (await probeSocket(socketPath))) {
         return { alreadyRunning: true, paths };
       }
     }

@@ -25,7 +25,7 @@ describe("shim getPrismDataDir hardening", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("refuses a data dir path that is a symlink", async () => {
+  it("resolves a symlinked data dir to its target", async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "prism-shim-datadir-symlink-"));
     const real = path.join(base, "real");
     fs.mkdirSync(real, { mode: 0o700 });
@@ -34,7 +34,10 @@ describe("shim getPrismDataDir hardening", () => {
     process.env.PRISM_DATA_DIR = link;
 
     const { getPrismDataDir } = await import("../../src/shim/dataDir.js");
-    expect(() => getPrismDataDir()).toThrow(/symlink/);
+    const result = getPrismDataDir();
+
+    expect(result).toBe(link);
+    expect(fs.statSync(fs.realpathSync(link)).mode & 0o777).toBe(0o700);
 
     fs.rmSync(base, { recursive: true, force: true });
   });
