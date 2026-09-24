@@ -41,6 +41,7 @@ import {
   VerificationHarness,     // v7.2.0: Verification Harness
   ValidationResult,        // v7.2.0: Verification Harness
   PrismJob,
+  RequestLogRow,
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
@@ -1063,11 +1064,22 @@ export class SupabaseStorage implements StorageBackend {
     return { pruned: [] };
   }
 
-  async getRequestLog(_key: string): Promise<string | null> {
+  async getRequestLogRow(_key: string): Promise<RequestLogRow | null> {
     return null;
   }
 
-  async putRequestLog(_key: string, _responseJson: string): Promise<void> {
+  async insertPendingRequestLog(_key: string, _argsHash: string, _owner: string): Promise<boolean> {
+    return true;
+  }
+
+  async completeRequestLog(_key: string, _response: string): Promise<void> {
+  }
+
+  async deleteRequestLog(_key: string): Promise<void> {
+  }
+
+  async reclaimRequestLog(_key: string, _fromOwner: string, _toOwner: string): Promise<boolean> {
+    return false;
   }
 
   async pruneRequestLog(_olderThanMs: number): Promise<void> {
@@ -1083,7 +1095,21 @@ export class SupabaseStorage implements StorageBackend {
   async completeJob(_id: string): Promise<void> {
   }
 
+  async deleteJob(_id: string): Promise<void> {
+  }
+
+  async purgeRequestLogEntriesContaining(_needle: string): Promise<void> {
+  }
+
   async failJob(_id: string, _error: string, _retryAtMs: number): Promise<void> {
+  }
+
+  async resetDeadJobs(): Promise<number> {
+    return 0;
+  }
+
+  async getExistingJobIds(_ids: string[]): Promise<Set<string>> {
+    return new Set();
   }
 
   // ─── HDC Dictionary (Concept Vectors) ───────────────────────────

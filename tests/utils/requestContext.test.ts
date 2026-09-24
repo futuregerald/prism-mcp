@@ -31,20 +31,20 @@ describe("requestContext", () => {
     expect(seen.sort()).toEqual(["/tmp/a", "/tmp/b"]);
   });
 
-  it("getCurrentGitState() defaults to requestContext().cwd when no explicit path is passed", () => {
+  it("getCurrentGitState() defaults to requestContext().cwd when no explicit path is passed", async () => {
     const repoRoot = path.resolve(__dirname, "../..");
 
-    const outsideContext = getCurrentGitState("/dev/null/not-a-repo");
+    const outsideContext = await getCurrentGitState("/dev/null/not-a-repo");
     expect(outsideContext.isRepo).toBe(false);
 
-    runWithRequestContext({ cwd: repoRoot }, () => {
-      const state = getCurrentGitState();
+    await runWithRequestContext({ cwd: repoRoot }, async () => {
+      const state = await getCurrentGitState();
       expect(state.isRepo).toBe(true);
     });
   });
 
-  it("getCurrentGitState() falls back to process.cwd() when no request context is active", () => {
-    const state = getCurrentGitState();
+  it("getCurrentGitState() falls back to process.cwd() when no request context is active", async () => {
+    const state = await getCurrentGitState();
     expect(typeof state.isRepo).toBe("boolean");
   });
 });

@@ -37,7 +37,7 @@ describe("daemon idempotent retries (M3 + prism_request_log)", () => {
 
   it("returns the identical response for a repeated idempotency key, with the handler run exactly once", async () => {
     const client = await connectRawClient(socketPath);
-    const idempotencyKey = "test-client:call-42";
+    const idempotencyKey = "idem-client:call-42";
 
     try {
       client.write(helloLine("/tmp/idempotency-project", "idem-client"));

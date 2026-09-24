@@ -3,7 +3,7 @@ import * as net from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-import { createServer, startBackgroundServices, getInFlightCount } from "../server.js";
+import { createServer, startBackgroundServices, getInFlightCount, beginRejectingNewToolCalls } from "../server.js";
 import { startStorage } from "../storageReady.js";
 import { initConfigStorage } from "../storage/configStorage.js";
 import { initTelemetry } from "../utils/telemetry.js";
@@ -180,6 +180,7 @@ export async function runDaemonMain(paths: LockPaths): Promise<void> {
   async function gracefulShutdown(reason: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
+    beginRejectingNewToolCalls();
     clearIdleTimer();
     clearInterval(inodeCheckInterval);
     log(`Shutting down gracefully (${reason})...`);

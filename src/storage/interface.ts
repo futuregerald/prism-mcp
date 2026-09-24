@@ -284,6 +284,16 @@ export interface PrismJob {
   created_at: number;
 }
 
+export interface RequestLogRow {
+  key: string;
+  argsHash: string;
+  status: "pending" | "done";
+  owner: string;
+  response: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ─── Storage Backend Interface ────────────────────────────────
 
 /**
@@ -643,9 +653,15 @@ export interface StorageBackend {
 
   pruneZeroSdmState(): Promise<{ pruned: string[] }>;
 
-  getRequestLog(key: string): Promise<string | null>;
+  getRequestLogRow(key: string): Promise<RequestLogRow | null>;
 
-  putRequestLog(key: string, responseJson: string): Promise<void>;
+  insertPendingRequestLog(key: string, argsHash: string, owner: string): Promise<boolean>;
+
+  completeRequestLog(key: string, response: string): Promise<void>;
+
+  deleteRequestLog(key: string): Promise<void>;
+
+  reclaimRequestLog(key: string, fromOwner: string, toOwner: string): Promise<boolean>;
 
   pruneRequestLog(olderThanMs: number): Promise<void>;
 
@@ -655,7 +671,15 @@ export interface StorageBackend {
 
   completeJob(id: string): Promise<void>;
 
+  deleteJob(id: string): Promise<void>;
+
+  purgeRequestLogEntriesContaining(needle: string): Promise<void>;
+
   failJob(id: string, error: string, retryAtMs: number): Promise<void>;
+
+  resetDeadJobs(): Promise<number>;
+
+  getExistingJobIds(ids: string[]): Promise<Set<string>>;
 
   /**
    * Fetch all compressed embeddings for a project to enable fast JS-space Hamming scanning.

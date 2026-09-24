@@ -520,6 +520,13 @@ export async function deepStoragePurgeHandler(args: unknown) {
     userId: PRISM_USER_ID,
   });
 
+  if (!dryRun) {
+    try {
+      await storage.pruneRequestLog(0);
+    } catch (cleanupErr) {
+      debugLog(`[deep_storage_purge] prism_request_log purge failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+    }
+  }
 
   // Format bytes as human-readable MB with 2 decimal places
   const mbs = (result.reclaimedBytes / (1024 * 1024)).toFixed(2);

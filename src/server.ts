@@ -100,9 +100,12 @@ import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/ap
 
 import { startStorage, isStorageReady, getStorageReadyPromise } from "./storageReady.js";
 import { startJobWorker } from "./jobs/worker.js";
-import { registerServer, broadcastLog } from "./connectionRegistry.js";
+import { registerServer, broadcastLog, subscribeServerToUri, unsubscribeServerFromUri, getServersSubscribedTo } from "./connectionRegistry.js";
+import { debugLog } from "./utils/logger.js";
+import { startRequestLogRetention } from "./requestLogRetention.js";
 import { runWithRequestContext, requestContext } from "./utils/requestContext.js";
 import { MUTATING_TOOLS } from "./tools/mutatingTools.js";
+import { runIdempotent, resolveIdempotencyKey } from "./idempotency.js";
 
 // ─── Import Tool Definitions (schemas) and Handlers (implementations) ─────
 
@@ -306,21 +309,16 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
   ];
 }
 
-// ─── v0.4.0: Resource Subscription Tracking ──────────────────────
-// REVIEWER NOTE: We track which project URIs clients have subscribed
-// to. When sessionSaveHandoffHandler successfully updates a project,
-// it calls notifyResourceUpdate() to push a refresh notification
-// to any Claude Desktop instance that has that project's memory
-// resource attached via paperclip.
-//
-// This is a simple in-memory set. If the server restarts, clients
-// will re-subscribe on reconnect (per MCP spec behavior).
-const activeSubscriptions = new Set<string>();
-
 let inFlightCallCount = 0;
 
 export function getInFlightCount(): number {
   return inFlightCallCount;
+}
+
+let rejectingNewToolCalls = false;
+
+export function beginRejectingNewToolCalls(): void {
+  rejectingNewToolCalls = true;
 }
 
 // ─── v5.2.1: Deferred Auto-Push Tracking ─────────────────────
@@ -339,12 +337,14 @@ let contextLoadedByClient = false;
  * memory resource, keeping the paperclipped context up-to-date
  * without the user doing anything.
  */
-export function notifyResourceUpdate(project: string, server: Server) {
+export function notifyResourceUpdate(project: string, _server: Server) {
   const uri = `memory://${project}/handoff`;
-  if (activeSubscriptions.has(uri)) {
-    server.notification({
+  for (const subscribedServer of getServersSubscribedTo(uri)) {
+    subscribedServer.notification({
       method: "notifications/resources/updated",
       params: { uri },
+    }).catch(err => {
+      debugLog(`[notifyResourceUpdate] notification send failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 }
@@ -717,21 +717,16 @@ export function createServer() {
     });
 
     // ─── Resource Subscriptions: subscribe/unsubscribe ───
-    // REVIEWER NOTE: These handlers track which resource URIs the
-    // client cares about. When sessionSaveHandoffHandler calls
-    // notifyResourceUpdate(), we check this set to decide whether
-    // to push a notification. This prevents unnecessary notifications
-    // for projects the client hasn't attached.
 
     server.setRequestHandler(SubscribeRequestSchema, async (request) => {
       const uri = request.params.uri;
-      activeSubscriptions.add(uri);
+      subscribeServerToUri(server, uri);
       return {};
     });
 
     server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
       const uri = request.params.uri;
-      activeSubscriptions.delete(uri);
+      unsubscribeServerFromUri(server, uri);
       return {};
     });
   }
@@ -750,6 +745,13 @@ export function createServer() {
   // When otel_enabled=false, getTracer() returns a no-op tracer — zero overhead.
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+
+    if (rejectingNewToolCalls) {
+      return {
+        content: [{ type: "text", text: "prism daemon is shutting down" }],
+        isError: true,
+      };
+    }
 
     // Start the root span for this MCP tool invocation.
     // All child spans (llm.generate_text, worker.vlm_caption, etc.) are
@@ -777,9 +779,10 @@ export function createServer() {
         let result: any;
 
         const metaIdempotencyKey = (request.params as { _meta?: Record<string, unknown> })._meta?.["prism/idempotencyKey"];
-        const idempotencyKey = typeof metaIdempotencyKey === "string" && metaIdempotencyKey.length > 0
+        const rawIdempotencyKey = typeof metaIdempotencyKey === "string" && metaIdempotencyKey.length > 0
           ? metaIdempotencyKey
           : undefined;
+        const idempotencyKey = resolveIdempotencyKey(rawIdempotencyKey, requestContext()?.clientId);
         const eligibleForIdempotency = idempotencyKey !== undefined && MUTATING_TOOLS.includes(name);
 
         const runToolSwitch = async (): Promise<void> => {
@@ -990,14 +993,12 @@ export function createServer() {
 
         if (eligibleForIdempotency) {
           const storage = await getStorage();
-          const cached = await storage.getRequestLog(idempotencyKey!);
-          if (cached !== null) {
-            result = JSON.parse(cached);
-          } else {
+          const runTool = async (): Promise<unknown> => {
             const baseCtx = requestContext() ?? {};
             await runWithRequestContext({ ...baseCtx, idempotencyKey }, runToolSwitch);
-            await storage.putRequestLog(idempotencyKey!, JSON.stringify(result));
-          }
+            return result;
+          };
+          result = await runIdempotent(storage, idempotencyKey!, name, args, runTool);
         } else {
           await runToolSwitch();
         }
@@ -1030,6 +1031,8 @@ export function createServer() {
                 server.sendLoggingMessage({
                   level: "warning",
                   data: alertBlock,
+                }).catch(err => {
+                  debugLog(`[Hivemind] sendLoggingMessage failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
                 });
               } catch { /* sendLoggingMessage is best-effort */ }
             }
@@ -1228,6 +1231,8 @@ export async function startServer() {
                 server.sendLoggingMessage({
                   level: "info",
                   data: `[Prism Auto-Push] No context found for project "${project}". Starting fresh.`,
+                }).catch(err => {
+                  debugLog(`[Prism] Auto-push sendLoggingMessage failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
                 });
                 continue;
               }
@@ -1263,6 +1268,8 @@ export async function startServer() {
               server.sendLoggingMessage({
                 level: "info",
                 data: ctx,
+              }).catch(err => {
+                debugLog(`[Prism] Auto-push sendLoggingMessage failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
               });
 
               console.error(`[Prism] Auto-pushed context for "${project}" (${defaultLevel})`);
@@ -1288,6 +1295,8 @@ export async function startServer() {
 }
 
 export function startBackgroundServices(): void {
+  startRequestLogRetention();
+
   // ─── v2.0 Step 6: Initialize SyncBus (Telepathy) ───
   // Fire-and-forget — SyncBus is non-critical for startup.
   // Awaiting getSyncBus() + startListening() could block the event loop

@@ -13,8 +13,6 @@
  *   checking for drift on every context load.
  *
  * DESIGN DECISIONS:
- *   - Uses child_process.execSync (not async) — these are fast Git
- *     plumbing commands that complete in <10ms.
  *   - Uses stdio: 'pipe' to suppress stderr from non-repo directories.
  *   - getGitDrift uses --name-status (not raw diff) to protect the
  *     LLM's context window. A 10,000-line refactor shows up as just
@@ -22,8 +20,12 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
-import { execSync, execFileSync } from "child_process";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { isAbsolute } from "path";
 import { requestContext } from "./requestContext.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface GitState {
   isRepo: boolean;
@@ -31,29 +33,32 @@ export interface GitState {
   commitSha: string | null;
 }
 
+function resolveProjectPath(projectPath: string): string {
+  return typeof projectPath === "string" && isAbsolute(projectPath) ? projectPath : process.cwd();
+}
+
 /**
  * Get the current Git branch and HEAD commit SHA.
  * Returns { isRepo: false } gracefully if not a Git repo.
  */
-export function getCurrentGitState(
+export async function getCurrentGitState(
   projectPath: string = requestContext()?.cwd ?? process.cwd()
-): GitState {
+): Promise<GitState> {
+  const cwd = resolveProjectPath(projectPath);
   try {
-    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd: projectPath,
-      stdio: "pipe",
-      timeout: 5000,
-    })
-      .toString()
-      .trim();
+    const { stdout: branchOut } = await execFileAsync(
+      "git",
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      { cwd, timeout: 5000 }
+    );
+    const branch = branchOut.toString().trim();
 
-    const commitSha = execSync("git rev-parse HEAD", {
-      cwd: projectPath,
-      stdio: "pipe",
-      timeout: 5000,
-    })
-      .toString()
-      .trim();
+    const { stdout: shaOut } = await execFileAsync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd, timeout: 5000 }
+    );
+    const commitSha = shaOut.toString().trim();
 
     return { isRepo: true, branch, commitSha };
   } catch {
@@ -67,10 +72,10 @@ export function getCurrentGitState(
  * Returns compact --name-status format (e.g., "M  src/index.ts").
  * Returns null if the SHA is invalid (rebased, force-pushed, etc.).
  */
-export function getGitDrift(
+export async function getGitDrift(
   oldSha: string,
   projectPath: string = requestContext()?.cwd ?? process.cwd()
-): string | null {
+): Promise<string | null> {
   // SECURITY: Validate SHA format before passing to git.
   // Without this, a corrupted DB entry like "; rm -rf /" would be
   // shell-injected via the old template string approach.
@@ -78,20 +83,15 @@ export function getGitDrift(
     return null;
   }
 
+  const cwd = resolveProjectPath(projectPath);
+
   try {
-    // Use execFileSync (no shell) to prevent injection even if
-    // validation is somehow bypassed. Args are passed as array.
-    const diff = execFileSync(
+    const { stdout } = await execFileAsync(
       "git",
       ["diff", "--name-status", oldSha, "HEAD"],
-      {
-        cwd: projectPath,
-        stdio: "pipe",
-        timeout: 10000,
-      }
-    )
-      .toString()
-      .trim();
+      { cwd, timeout: 10000 }
+    );
+    const diff = stdout.toString().trim();
 
     return diff || null;
   } catch {

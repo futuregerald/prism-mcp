@@ -1,7 +1,10 @@
 import { getStorage } from "../storage/index.js";
+import { getSetting, setSetting } from "../storage/configStorage.js";
 import { debugLog } from "../utils/logger.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { findLedgerEntriesMissingEmbeddings, computeLedgerEmbeddingText } from "../tools/hygieneHandlers.js";
+import { runOutsideRequestContext } from "../utils/requestContext.js";
+import { PRISM_USER_ID } from "../config.js";
 
 type JobHandler = (payload: string) => Promise<void>;
 
@@ -13,12 +16,30 @@ export function registerJobHandler(kind: string, handler: JobHandler): void {
 
 interface EmbedLedgerJobPayload {
   entryId: string;
-  text: string;
 }
 
 async function embedLedgerJobHandler(payloadJson: string): Promise<void> {
-  const { entryId, text } = JSON.parse(payloadJson) as EmbedLedgerJobPayload;
+  const { entryId } = JSON.parse(payloadJson) as EmbedLedgerJobPayload;
   const storage = await getStorage();
+
+  const rows = await storage.getLedgerEntries({
+    id: `eq.${entryId}`,
+    user_id: `eq.${PRISM_USER_ID}`,
+    select: "id,summary,decisions,archived_at,deleted_at",
+    limit: "1",
+  });
+  const row = rows[0] as any;
+  if (!row || row.archived_at || row.deleted_at) {
+    debugLog(`[JobWorker] embed_ledger: entry ${entryId} is gone or soft-deleted — skipping (job counted as complete)`);
+    return;
+  }
+
+  const text = computeLedgerEmbeddingText(row);
+  if (!text.trim()) {
+    debugLog(`[JobWorker] embed_ledger: entry ${entryId} has no embeddable text — skipping (job counted as complete)`);
+    return;
+  }
+
   const embedding = await getLLMProvider().generateEmbedding(text);
 
   const patchData: Record<string, unknown> = {
@@ -45,15 +66,62 @@ async function embedLedgerJobHandler(payloadJson: string): Promise<void> {
 
 registerJobHandler("embed_ledger", embedLedgerJobHandler);
 
+const RECOVERY_CURSOR_SETTING = "embed_recovery_cursor";
+const RECOVERY_PAGE_SIZE = 200;
+const RECOVERY_MAX_PAGES = 10;
+
+async function readRecoveryCursor(): Promise<string | undefined> {
+  try {
+    return (await getSetting(RECOVERY_CURSOR_SETTING, "")) || undefined;
+  } catch (err) {
+    debugLog(`[JobWorker] Failed to read recovery cursor, starting from the beginning (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
+
+async function writeRecoveryCursor(cursorId: string | undefined): Promise<void> {
+  try {
+    await setSetting(RECOVERY_CURSOR_SETTING, cursorId ?? "");
+  } catch (err) {
+    debugLog(`[JobWorker] Failed to persist recovery cursor (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function enqueueStartupRecoveryJobs(): Promise<void> {
   const storage = await getStorage();
-  const entries = await findLedgerEntriesMissingEmbeddings(storage, { limit: 200 });
-  for (const entry of entries) {
-    const e = entry as any;
-    const text = computeLedgerEmbeddingText(e);
-    if (!text.trim()) continue;
-    await storage.enqueueJob(`embed_ledger:${e.id}`, "embed_ledger", JSON.stringify({ entryId: e.id, text }));
+  let cursorId: string | undefined = await readRecoveryCursor();
+  let enqueued = 0;
+  let wrapped = false;
+
+  for (let page = 0; page < RECOVERY_MAX_PAGES && enqueued < RECOVERY_PAGE_SIZE; page++) {
+    const entries = await findLedgerEntriesMissingEmbeddings(storage, {
+      limit: RECOVERY_PAGE_SIZE,
+      cursorId,
+    });
+
+    if (entries.length === 0) {
+      if (wrapped) break;
+      cursorId = undefined;
+      wrapped = true;
+      continue;
+    }
+
+    const candidateIds = entries.map((entry: any) => `embed_ledger:${entry.id}`);
+    const existingJobIds = await storage.getExistingJobIds(candidateIds);
+
+    for (const entry of entries) {
+      const e = entry as any;
+      cursorId = String(e.id);
+      if (existingJobIds.has(`embed_ledger:${e.id}`)) continue;
+      const text = computeLedgerEmbeddingText(e);
+      if (!text.trim()) continue;
+      await storage.enqueueJob(`embed_ledger:${e.id}`, "embed_ledger", JSON.stringify({ entryId: e.id }));
+      enqueued++;
+      if (enqueued >= RECOVERY_PAGE_SIZE) break;
+    }
   }
+
+  await writeRecoveryCursor(cursorId);
 }
 
 const LEASE_MS = 60_000;
@@ -94,19 +162,26 @@ let currentPollMs = 2000;
 async function runPollCycle(): Promise<void> {
   let didWork = true;
   while (didWork && !stopped) {
-    didWork = await processOneJob();
+    try {
+      didWork = await processOneJob();
+    } catch (err) {
+      debugLog(`[JobWorker] Poll cycle failed (non-fatal, backing off): ${err instanceof Error ? err.message : String(err)}`);
+      didWork = false;
+    }
   }
 }
 
 function scheduleNextPoll(delayMs: number): void {
   if (stopped) return;
-  pollTimer = setTimeout(() => {
-    pollTimer = null;
-    processingLoop = runPollCycle().finally(() => {
-      processingLoop = null;
-      scheduleNextPoll(currentPollMs);
-    });
-  }, delayMs);
+  runOutsideRequestContext(() => {
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      processingLoop = runPollCycle().finally(() => {
+        processingLoop = null;
+        scheduleNextPoll(currentPollMs);
+      });
+    }, delayMs);
+  });
 }
 
 export interface StartJobWorkerOptions {
@@ -116,6 +191,11 @@ export interface StartJobWorkerOptions {
 export async function startJobWorker(options: StartJobWorkerOptions = {}): Promise<void> {
   currentPollMs = options.pollMs ?? 2000;
   stopped = false;
+  const storage = await getStorage();
+  const resetCount = await storage.resetDeadJobs();
+  if (resetCount > 0) {
+    debugLog(`[JobWorker] Reset ${resetCount} dead job(s) (attempts>=5) for one more cycle`);
+  }
   await enqueueStartupRecoveryJobs();
   scheduleNextPoll(0);
 }
@@ -138,6 +218,10 @@ export async function stopJobWorker(): Promise<void> {
     pollTimer = null;
   }
   if (processingLoop) {
-    await processingLoop;
+    try {
+      await processingLoop;
+    } catch (err) {
+      debugLog(`[JobWorker] stopJobWorker: pending poll cycle rejected (ignored): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }

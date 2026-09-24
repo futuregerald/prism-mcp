@@ -15,3 +15,7 @@ export function runWithRequestContext<T>(ctx: RequestContext, fn: () => T): T {
 export function requestContext(): RequestContext | undefined {
   return storage.getStore();
 }
+
+export function runOutsideRequestContext<T>(fn: () => T): T {
+  return storage.exit(fn);
+}

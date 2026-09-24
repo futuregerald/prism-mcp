@@ -148,7 +148,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     throw new Error("Invalid arguments for session_save_ledger");
   }
 
-  const testDelayMs = parseInt(process.env.PRISM_TEST_SAVE_DELAY_MS || "0", 10);
+  const testDelayMs = process.env.NODE_ENV === "test" ? parseInt(process.env.PRISM_TEST_SAVE_DELAY_MS || "0", 10) : 0;
   if (testDelayMs > 0) {
     await new Promise(resolve => setTimeout(resolve, testDelayMs));
   }
@@ -210,21 +210,34 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (idempotentId && (msg.includes("UNIQUE") || msg.includes("constraint"))) {
-      debugLog(`[session_save_ledger] Idempotent retry — ledger row ${idempotentId} already exists, treating as saved`);
-      alreadySaved = true;
-      result = [{ id: idempotentId, project, created_at: new Date().toISOString() }];
+      const existing = await storage.getLedgerEntries({
+        id: `eq.${idempotentId}`,
+        user_id: `eq.${PRISM_USER_ID}`,
+        limit: "1",
+      });
+      if (existing.length > 0) {
+        debugLog(`[session_save_ledger] Idempotent retry — ledger row ${idempotentId} already exists, returning stored row`);
+        alreadySaved = true;
+        result = existing;
+      } else {
+        throw err;
+      }
     } else {
       throw err;
     }
   }
 
+  const afterSaveDelayMs = process.env.NODE_ENV === "test" ? parseInt(process.env.PRISM_TEST_AFTER_SAVE_DELAY_MS || "0", 10) : 0;
+  if (afterSaveDelayMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, afterSaveDelayMs));
+  }
+
   if (result && !alreadySaved) {
-    const embeddingText = [summary, ...(decisions || [])].join("\n");
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId, text: embeddingText }));
+      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
       kickJobWorker();
     }
   }
@@ -338,7 +351,7 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
   }
 
   // Auto-capture Git state for Reality Drift Detection (v2.0 Step 5)
-  const gitState = getCurrentGitState();
+  const gitState = await getCurrentGitState();
   const metadata: Record<string, unknown> = {};
   if (gitState.isRepo) {
     metadata.git_branch = gitState.branch;
@@ -771,7 +784,7 @@ export async function sessionLoadContextHandler(args: unknown) {
   const meta = (data as any)?.metadata;
 
   if (meta?.last_commit_sha) {
-    const currentGit = getCurrentGitState();
+    const currentGit = await getCurrentGitState();
 
     if (currentGit.isRepo) {
       if (meta.git_branch && currentGit.branch !== meta.git_branch) {
@@ -784,7 +797,7 @@ export async function sessionLoadContextHandler(args: unknown) {
         );
       } else if (currentGit.commitSha !== meta.last_commit_sha) {
         // Same branch, different commits — calculate drift
-        const changes = getGitDrift(meta.last_commit_sha as string);
+        const changes = await getGitDrift(meta.last_commit_sha as string);
         if (changes) {
           driftReport = `\n\n⚠️ **REALITY DRIFT DETECTED**\n` +
             `Since this memory was saved (commit ${(meta.last_commit_sha as string).substring(0, 8)}), ` +
@@ -1162,7 +1175,8 @@ export async function sessionSaveImageHandler(args: unknown) {
   const { project, file_path, description } = args;
 
   // Resolve path (supports relative paths)
-  const resolvedPath = nodePath.resolve(file_path);
+  const baseCwd = requestContext()?.cwd ?? process.cwd();
+  const resolvedPath = nodePath.isAbsolute(file_path) ? file_path : nodePath.resolve(baseCwd, file_path);
   if (!fs.existsSync(resolvedPath)) {
     return {
       content: [{ type: "text", text: `Error: File not found at "${resolvedPath}".` }],
@@ -1363,6 +1377,13 @@ export async function sessionForgetMemoryHandler(args: unknown) {
       // FTS5 triggers (SQLite) or Supabase cascades clean up indexes.
       await storage.hardDeleteLedger(memory_id, PRISM_USER_ID);
 
+      try {
+        await storage.deleteJob(`embed_ledger:${memory_id}`);
+        await storage.purgeRequestLogEntriesContaining(memory_id);
+      } catch (cleanupErr) {
+        debugLog(`[session_forget_memory] Cleanup of job/request-log rows failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+      }
+
       debugLog(`[session_forget_memory] Hard-deleted entry ${memory_id}`);
 
       return {
@@ -1380,6 +1401,12 @@ export async function sessionForgetMemoryHandler(args: unknown) {
       // The entry remains in the database but is excluded from ALL search
       // queries (vector, FTS5, and context loading).
       await storage.softDeleteLedger(memory_id, PRISM_USER_ID, reason);
+
+      try {
+        await storage.deleteJob(`embed_ledger:${memory_id}`);
+      } catch (cleanupErr) {
+        debugLog(`[session_forget_memory] Cleanup of job row failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+      }
 
       debugLog(`[session_forget_memory] Soft-deleted entry ${memory_id} (reason: ${reason || "none"})`);
 
@@ -1450,12 +1477,11 @@ export async function sessionSaveExperienceHandler(args: unknown) {
   });
 
   if (result) {
-    const embeddingText = summary;
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId, text: embeddingText }));
+      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
       kickJobWorker();
     }
   }
@@ -1480,8 +1506,10 @@ export async function sessionExportMemoryHandler(args: unknown) {
     };
   }
 
-  const { output_dir, format = "json" } = args;
+  const { format = "json" } = args;
   const requestedProject = (args as { project?: string }).project;
+  const baseCwd = requestContext()?.cwd ?? process.cwd();
+  const output_dir = isAbsolute(args.output_dir) ? args.output_dir : join(baseCwd, args.output_dir);
 
   // Validate output directory
   if (!existsSync(output_dir)) {

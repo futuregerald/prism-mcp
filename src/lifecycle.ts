@@ -14,6 +14,7 @@ import { getStorage } from "./storage/index.js";
 import { shutdownTelemetry } from "./utils/telemetry.js";
 import { getPrismDataDir } from "./utils/dataDir.js";
 import { stopJobWorker } from "./jobs/worker.js";
+import { stopRequestLogRetention } from "./requestLogRetention.js";
 
 /**
  * Instance-aware PID file.
@@ -162,6 +163,7 @@ export function acquireLock() {
  * Registers handlers to close SQLite file handles cleanly when the server stops.
  */
 export async function performResourceCleanup(logFn: (msg: string) => void = log): Promise<void> {
+  stopRequestLogRetention();
   await stopJobWorker();
 
   // 0. Stop the Dark Factory background runner first (prevents new DB writes)

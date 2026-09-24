@@ -339,6 +339,16 @@ export async function knowledgeForgetHandler(args: unknown) {
     const result = await storage.deleteLedger(ledgerParams);
     ledgerCount = result.length;
 
+    for (const deleted of result) {
+      const id = (deleted as any)?.id;
+      if (!id) continue;
+      try {
+        await storage.deleteJob(`embed_ledger:${id}`);
+      } catch (cleanupErr) {
+        debugLog(`[knowledge_forget] Cleanup of job row for ${id} failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+      }
+    }
+
     if (clear_handoff && project) {
       await storage.deleteHandoff(project, PRISM_USER_ID);
       handoffCleared = true;

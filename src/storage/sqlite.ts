@@ -44,6 +44,7 @@ import type {
   ValidationResult,        // v7.2.0
   SpreadingActivationOptions, // v8.0: Spreading Activation
   PrismJob,
+  RequestLogRow,
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
@@ -801,13 +802,42 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
-    await this.db.execute(`
-      CREATE TABLE IF NOT EXISTS prism_request_log (
-        key TEXT PRIMARY KEY,
-        response TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    `);
+    const requestLogInfo = await this.db.execute(`PRAGMA table_info(prism_request_log)`);
+    const requestLogCols = new Set(requestLogInfo.rows.map(row => String(row.name)));
+    if (requestLogCols.size > 0 && !requestLogCols.has("args_hash")) {
+      await this.db.execute(`ALTER TABLE prism_request_log RENAME TO prism_request_log_pre_b1`);
+      await this.db.execute(`
+        CREATE TABLE prism_request_log (
+          key TEXT PRIMARY KEY,
+          args_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          response TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      await this.db.execute(`
+        INSERT INTO prism_request_log (key, args_hash, status, owner, response, created_at, updated_at)
+        SELECT key, '', 'done', '', response, created_at, created_at FROM prism_request_log_pre_b1
+      `);
+      await this.db.execute(`DROP TABLE prism_request_log_pre_b1`);
+    } else {
+      await this.db.execute(`
+        CREATE TABLE IF NOT EXISTS prism_request_log (
+          key TEXT PRIMARY KEY,
+          args_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          response TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+    }
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_request_log_created_at ON prism_request_log(created_at)`
+    );
 
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS prism_jobs (
@@ -820,8 +850,9 @@ export class SqliteStorage implements StorageBackend {
         created_at INTEGER NOT NULL
       )
     `);
+    await this.db.execute(`DROP INDEX IF EXISTS idx_prism_jobs_run_after`);
     await this.db.execute(
-      `CREATE INDEX IF NOT EXISTS idx_prism_jobs_run_after ON prism_jobs(run_after)`
+      `CREATE INDEX IF NOT EXISTS idx_prism_jobs_run_after_active ON prism_jobs(run_after) WHERE attempts < 5`
     );
 
     // ─── v6.1 Migration: Integrity Check ──────────────────────
@@ -2872,28 +2903,63 @@ export class SqliteStorage implements StorageBackend {
     return { pruned };
   }
 
-  async getRequestLog(key: string): Promise<string | null> {
+  async getRequestLogRow(key: string): Promise<RequestLogRow | null> {
     const result = await this.db.execute({
-      sql: `SELECT response FROM prism_request_log WHERE key = ?`,
+      sql: `SELECT key, args_hash, status, owner, response, created_at, updated_at
+            FROM prism_request_log WHERE key = ?`,
       args: [key],
     });
     if (result.rows.length === 0) return null;
-    return result.rows[0].response as string;
+    const row = result.rows[0];
+    return {
+      key: row.key as string,
+      argsHash: row.args_hash as string,
+      status: row.status as "pending" | "done",
+      owner: row.owner as string,
+      response: (row.response as string | null) ?? null,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
   }
 
-  async putRequestLog(key: string, responseJson: string): Promise<void> {
-    await this.db.execute({
-      sql: `INSERT INTO prism_request_log (key, response, created_at)
-            VALUES (?, ?, ?)
+  async insertPendingRequestLog(key: string, argsHash: string, owner: string): Promise<boolean> {
+    const now = Date.now();
+    const result = await this.db.execute({
+      sql: `INSERT INTO prism_request_log (key, args_hash, status, owner, response, created_at, updated_at)
+            VALUES (?, ?, 'pending', ?, NULL, ?, ?)
             ON CONFLICT(key) DO NOTHING`,
-      args: [key, responseJson, Date.now()],
+      args: [key, argsHash, owner, now, now],
     });
+    return (result.rowsAffected ?? 0) > 0;
+  }
+
+  async completeRequestLog(key: string, response: string): Promise<void> {
+    await this.db.execute({
+      sql: `UPDATE prism_request_log SET status = 'done', response = ?, updated_at = ? WHERE key = ?`,
+      args: [response, Date.now(), key],
+    });
+  }
+
+  async deleteRequestLog(key: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_request_log WHERE key = ?`,
+      args: [key],
+    });
+  }
+
+  async reclaimRequestLog(key: string, fromOwner: string, toOwner: string): Promise<boolean> {
+    const result = await this.db.execute({
+      sql: `UPDATE prism_request_log SET owner = ?, updated_at = ?
+            WHERE key = ? AND status = 'pending' AND owner = ?`,
+      args: [toOwner, Date.now(), key, fromOwner],
+    });
+    return (result.rowsAffected ?? 0) > 0;
   }
 
   async pruneRequestLog(olderThanMs: number): Promise<void> {
     const cutoff = Date.now() - olderThanMs;
     await this.db.execute({
-      sql: `DELETE FROM prism_request_log WHERE created_at < ?`,
+      sql: `DELETE FROM prism_request_log WHERE created_at <= ?`,
       args: [cutoff],
     });
   }
@@ -2940,11 +3006,43 @@ export class SqliteStorage implements StorageBackend {
     });
   }
 
+  async deleteJob(id: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_jobs WHERE id = ?`,
+      args: [id],
+    });
+  }
+
+  async purgeRequestLogEntriesContaining(needle: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_request_log WHERE response LIKE ?`,
+      args: [`%${needle}%`],
+    });
+  }
+
   async failJob(id: string, error: string, retryAtMs: number): Promise<void> {
     await this.db.execute({
       sql: `UPDATE prism_jobs SET last_error = ?, run_after = ? WHERE id = ?`,
       args: [error, retryAtMs, id],
     });
+  }
+
+  async resetDeadJobs(): Promise<number> {
+    const result = await this.db.execute({
+      sql: `UPDATE prism_jobs SET attempts = 0, last_error = NULL, run_after = ? WHERE attempts >= 5`,
+      args: [Date.now()],
+    });
+    return result.rowsAffected ?? 0;
+  }
+
+  async getExistingJobIds(ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => "?").join(",");
+    const result = await this.db.execute({
+      sql: `SELECT id FROM prism_jobs WHERE id IN (${placeholders})`,
+      args: ids,
+    });
+    return new Set(result.rows.map(row => String(row.id)));
   }
 
   // ─── v6.5: HDC State Machines & Cognitive Logic ───────────────────────
