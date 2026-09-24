@@ -152,6 +152,20 @@ function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
   });
 }
 
+const DEFAULT_MAX_LINE_BYTES = 64 * 1024 * 1024;
+
+function destroySocketOnOversizedLine(socket: net.Socket, maxLineBytes: number): void {
+  let bytesSinceNewline = 0;
+  socket.on("data", (chunk: Buffer) => {
+    const lastNewline = chunk.lastIndexOf(0x0a);
+    bytesSinceNewline = lastNewline === -1 ? bytesSinceNewline + chunk.length : chunk.length - lastNewline - 1;
+    if (bytesSinceNewline > maxLineBytes) {
+      log(`Closing connection: a single line exceeded ${maxLineBytes} bytes`);
+      socket.destroy();
+    }
+  });
+}
+
 function isAdminHello(hello: HelloResult | AdminHello): hello is AdminHello {
   return typeof (hello as AdminHello).action === "string";
 }
@@ -203,6 +217,8 @@ async function handleConnection(
       connected?.(message);
     });
   };
+
+  destroySocketOnOversizedLine(socket, parsePositiveIntEnv(process.env.PRISM_DAEMON_MAX_LINE_BYTES, DEFAULT_MAX_LINE_BYTES));
 
   resumeSocketAfterTransportWired(socket);
 
