@@ -3,7 +3,7 @@ import * as net from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-import { createServer, startBackgroundServices, getInFlightCount, beginRejectingNewToolCalls, holdNewToolCallsUnansweredDuringShutdown } from "../server.js";
+import { createServer, startBackgroundServices, getInFlightCount, beginRejectingNewToolCalls, holdNewToolCallsUnansweredDuringShutdown } from "../mcpServer.js";
 import { startStorage, getStorageReadyPromise } from "../storageReady.js";
 import { initConfigStorage } from "../storage/configStorage.js";
 import { initTelemetry } from "../utils/telemetry.js";

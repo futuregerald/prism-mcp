@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { startServer, createSandboxServer } from "./src/server.js";
+import { startServer, createSandboxServer } from "./src/mcpServer.js";
 
 // Re-export for Smithery capability scanning
 export { createSandboxServer };

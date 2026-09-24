@@ -28,9 +28,11 @@ describe("stdio mode still works after the Phase 2 refactor", () => {
     ensureBuilt();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "prd-stdio-"));
 
+    const stdioEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete stdioEnv.PRISM_SHARED_DAEMON;
     proc = spawn(process.execPath, [SERVER_ENTRY], {
       env: {
-        ...process.env,
+        ...stdioEnv,
         HOME: home,
         PRISM_DATA_DIR: home,
         PRISM_STORAGE: "local",

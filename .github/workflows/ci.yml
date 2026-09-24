@@ -34,3 +34,6 @@ jobs:
         # Specifically runs the OS-level integration tests to ensure
         # drift policies and JSON exit codes are honored physically
         run: npx vitest run tests/verification/cli-integration.test.ts
+
+      - name: Server Entry Tests
+        run: npx vitest run tests/server-stdio-smoke.test.ts tests/utils/sharedDaemonMode.test.ts tests/utils/launcherHardening.test.ts tests/shim/legacy-entry.test.ts

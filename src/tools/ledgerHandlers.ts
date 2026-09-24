@@ -5,7 +5,7 @@ import { requestContext } from "../utils/requestContext.js";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
-import { getPrismDataDir } from "../utils/dataDir.js";
+import { getPrismDataDir, resolveProjectMediaDir } from "../utils/dataDir.js";
 /**
  * Session Memory Handlers (v2.0 — StorageBackend Refactor)
  *
@@ -85,7 +85,7 @@ const activeCompactions = new Set<string>();
 
 // ─── v0.4.0: Import server type for resource notifications ───
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { notifyResourceUpdate } from "../server.js";
+import { notifyResourceUpdate } from "../mcpServer.js";
 
 // ─── Security: Stored Prompt Injection Prevention ─────────────
 // SECURITY FIX: Sanitize all user-provided text before persistence.
@@ -1230,7 +1230,7 @@ export async function sessionSaveImageHandler(args: unknown) {
   }
 
   // Setup media vault directory
-  const mediaDir = nodePath.join(getPrismDataDir(), "media", project);
+  const mediaDir = resolveProjectMediaDir(project);
   if (!fs.existsSync(mediaDir)) {
     fs.mkdirSync(mediaDir, { recursive: true });
   }
@@ -1333,7 +1333,7 @@ export async function sessionViewImageHandler(args: unknown) {
     };
   }
 
-  const vaultPath = nodePath.join(getPrismDataDir(), "media", project, imgMeta.filename);
+  const vaultPath = nodePath.join(resolveProjectMediaDir(project), imgMeta.filename);
   if (!fs.existsSync(vaultPath)) {
     return {
       content: [{

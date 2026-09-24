@@ -23,7 +23,7 @@ import * as os from "os";
 import * as fs from "fs";
 
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { createServer, getAllPossibleTools } from "../server.js";
+import { createServer, getAllPossibleTools } from "../mcpServer.js";
 import { getStorage } from "../storage/index.js";
 import { PRISM_USER_ID, SERVER_CONFIG } from "../config.js";
 import { renderDashboardHTML } from "./ui.js";
