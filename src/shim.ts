@@ -15,6 +15,7 @@ import { readLock, isPidAlive, LOCK_PID_ALIVE_WAIT_MS } from "./daemon/instanceL
 import { checkExplicitSocketPath, isOwnedByCurrentUser } from "./utils/dataDir.js";
 import { computeConfigFingerprint } from "./utils/configFingerprint.js";
 import { parsePositiveIntEnv } from "./utils/envInt.js";
+import { safeCwd } from "./utils/safeCwd.js";
 
 const DEBUG = process.env.PRISM_SHIM_DEBUG === "1";
 
@@ -310,7 +311,7 @@ async function main(): Promise<void> {
   const dataDir = getPrismDataDir();
   const socketPath = getSocketPath();
   const clientId = crypto.randomUUID();
-  const cwd = process.cwd();
+  const cwd = safeCwd();
   const requestTimeoutMs = parsePositiveIntEnv(process.env.PRISM_SHIM_REQUEST_TIMEOUT_MS, 120000);
 
   const session = new ShimSession({

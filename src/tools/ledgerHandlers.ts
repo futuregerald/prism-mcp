@@ -6,6 +6,8 @@ import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
 import { getPrismDataDir, resolveProjectMediaDir } from "../utils/dataDir.js";
+import { safeCwd } from "../utils/safeCwd.js";
+import { homedir } from "node:os";
 /**
  * Session Memory Handlers (v2.0 — StorageBackend Refactor)
  *
@@ -1207,7 +1209,7 @@ export async function sessionSaveImageHandler(args: unknown) {
   const { project, file_path, description } = args;
 
   // Resolve path (supports relative paths)
-  const baseCwd = requestContext()?.cwd ?? process.cwd();
+  const baseCwd = requestContext()?.cwd ?? safeCwd() ?? homedir();
   const resolvedPath = nodePath.isAbsolute(file_path) ? file_path : nodePath.resolve(baseCwd, file_path);
   if (!fs.existsSync(resolvedPath)) {
     return {
@@ -1554,7 +1556,7 @@ export async function sessionExportMemoryHandler(args: unknown) {
 
   const { format = "json" } = args;
   const requestedProject = (args as { project?: string }).project;
-  const baseCwd = requestContext()?.cwd ?? process.cwd();
+  const baseCwd = requestContext()?.cwd ?? safeCwd() ?? homedir();
   const output_dir = isAbsolute(args.output_dir) ? args.output_dir : join(baseCwd, args.output_dir);
 
   // Validate output directory
