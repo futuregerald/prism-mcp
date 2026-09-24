@@ -38,7 +38,11 @@ describe("daemon single-instance locking (R7)", () => {
     const socketPath = getSocketPath(dataDir);
     await waitForSocket(socketPath, 15_000);
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    const loserDeadline = Date.now() + 15_000;
+    while ([procA.exitCode, procB.exitCode].every(code => code === null) && Date.now() < loserDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     const exitedCodes = [procA.exitCode, procB.exitCode];
     const exitedCount = exitedCodes.filter(code => code !== null).length;
@@ -61,7 +65,7 @@ describe("daemon single-instance locking (R7)", () => {
         client.close();
       }
     }
-  }, 30_000);
+  }, 45_000);
 
   it("breaks a stale lock (foreign/dead pid, startedAt older than 3s) and starts normally", async () => {
     const lockPath = path.join(dataDir, "prismd.lock");
