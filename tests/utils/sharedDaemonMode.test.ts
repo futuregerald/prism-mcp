@@ -20,7 +20,10 @@ describe("shouldDelegateToSharedDaemon", () => {
   afterEach(() => {
     if (savedDataDir === undefined) delete process.env.PRISM_DATA_DIR; else process.env.PRISM_DATA_DIR = savedDataDir;
     if (savedFlag === undefined) delete process.env.PRISM_SHARED_DAEMON; else process.env.PRISM_SHARED_DAEMON = savedFlag;
+    fs.rmSync(dataDir, { recursive: true, force: true });
   });
+
+  const unixOnly = process.platform === "win32" ? it.skip : it;
 
   const writeMarker = () => fs.writeFileSync(path.join(dataDir, SHARED_DAEMON_MARKER), "");
 
@@ -28,13 +31,13 @@ describe("shouldDelegateToSharedDaemon", () => {
     expect(shouldDelegateToSharedDaemon()).toBe(false);
   });
 
-  it("turns on when the marker file exists", () => {
+  unixOnly("turns on when the marker file exists", () => {
     writeMarker();
     expect(shouldDelegateToSharedDaemon()).toBe(true);
   });
 
   for (const value of ["1", "true", "TRUE", "True"]) {
-    it(`turns on with PRISM_SHARED_DAEMON=${value} and no marker`, () => {
+    unixOnly(`turns on with PRISM_SHARED_DAEMON=${value} and no marker`, () => {
       process.env.PRISM_SHARED_DAEMON = value;
       expect(shouldDelegateToSharedDaemon()).toBe(true);
     });
@@ -48,7 +51,7 @@ describe("shouldDelegateToSharedDaemon", () => {
     });
   }
 
-  it("an unrecognised value falls back to the marker", () => {
+  unixOnly("an unrecognised value falls back to the marker", () => {
     process.env.PRISM_SHARED_DAEMON = "maybe";
     expect(shouldDelegateToSharedDaemon()).toBe(false);
     writeMarker();

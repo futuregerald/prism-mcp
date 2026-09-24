@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] — Shared daemon (fork)
+
+### Added
+- **Shared daemon mode** (`dist/daemon.js` plus the `prism-connect` shim `dist/shim.js`): one Prism process per user, shared by every MCP client. See `docs/SHARED_DAEMON.md`.
+- **The legacy `dist/server.js` entry can hand off to the shared daemon.** It does this when a `shared-daemon` file exists in the data directory, or when `PRISM_SHARED_DAEMON=true`. `PRISM_SHARED_DAEMON=false` keeps the in-process server. Shared-daemon mode is Unix-only.
+
+### Changed
+- **Breaking for library consumers:** the server module moved to `dist/mcpServer.js`, which is now the package `main`. `dist/server.js` is a small launcher with no exports. Import `createServer`, `startServer` and the rest from `dist/mcpServer.js`.
+
+### Security
+- Project names used for the media vault must resolve inside `<data dir>/media/`. `session_save_image`, `session_view_image` and auto-capture reject names like `../x`.
+- The shim refuses to connect to a socket that is not a socket owned by the current user.
+
 ## [9.12.0] - 2026-04-15 — Memory Security Hardening (Stored Prompt Injection Prevention)
 
 ### Security

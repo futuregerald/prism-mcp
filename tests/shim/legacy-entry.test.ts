@@ -61,8 +61,11 @@ afterEach(async () => {
   await terminateAllDaemonsForCreatedDataDirs();
 });
 
+const stdioPidFile = (dataDir: string) => path.join(dataDir, "server-default.pid");
+const unixOnly = process.platform === "win32" ? it.skip : it;
+
 describe("legacy dist/server.js entry", () => {
-  it("with the shared-daemon marker, becomes a small shim that talks to a spawned daemon", async () => {
+  unixOnly("with the shared-daemon marker, becomes a small shim that talks to a spawned daemon", async () => {
     const dataDir = freshDataDir();
     fs.writeFileSync(path.join(dataDir, "shared-daemon"), "");
     const child = spawnLegacy(dataDir, undefined);
@@ -72,9 +75,20 @@ describe("legacy dist/server.js entry", () => {
 
     await waitFor(() => readLockPid(dataDir) !== null, 15_000);
     expect(readLockPid(dataDir)).not.toBe(child.pid);
+    expect(fs.existsSync(stdioPidFile(dataDir))).toBe(false);
 
     const mb = footprintMB(child.pid!);
     if (mb !== null) expect(mb).toBeLessThan(60);
+  }, 60_000);
+
+  unixOnly("PRISM_SHARED_DAEMON=true without a marker also becomes a shim", async () => {
+    const dataDir = freshDataDir();
+    const child = spawnLegacy(dataDir, "true");
+
+    const toolCount = await handshakeAndListTools(child);
+    expect(toolCount).toBeGreaterThan(20);
+    await waitFor(() => readLockPid(dataDir) !== null, 15_000);
+    expect(fs.existsSync(stdioPidFile(dataDir))).toBe(false);
   }, 60_000);
 
   it("PRISM_SHARED_DAEMON=false forces the in-process stdio server even with the marker", async () => {
@@ -85,6 +99,7 @@ describe("legacy dist/server.js entry", () => {
     const toolCount = await handshakeAndListTools(child);
     expect(toolCount).toBeGreaterThan(20);
     expect(fs.existsSync(path.join(dataDir, "prismd.lock"))).toBe(false);
+    expect(fs.existsSync(stdioPidFile(dataDir))).toBe(true);
   }, 60_000);
 
   it("without the marker, stays the in-process stdio server", async () => {
@@ -94,5 +109,6 @@ describe("legacy dist/server.js entry", () => {
     const toolCount = await handshakeAndListTools(child);
     expect(toolCount).toBeGreaterThan(20);
     expect(fs.existsSync(path.join(dataDir, "prismd.lock"))).toBe(false);
+    expect(fs.existsSync(stdioPidFile(dataDir))).toBe(true);
   }, 60_000);
 });

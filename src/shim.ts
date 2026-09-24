@@ -12,7 +12,7 @@ import { makeLineSplitter, extractParseableId } from "./shim/lineSplitter.js";
 import { getSocketPath, getSpawnMarkerPath, getLogPath, openDaemonLogFd } from "./shim/dataDir.js";
 import { getPrismDataDir } from "./shim/dataDir.js";
 import { readLock, isPidAlive, LOCK_PID_ALIVE_WAIT_MS } from "./daemon/instanceLock.js";
-import { checkExplicitSocketPath } from "./utils/dataDir.js";
+import { checkExplicitSocketPath, isOwnedByCurrentUser } from "./utils/dataDir.js";
 import { computeConfigFingerprint } from "./utils/configFingerprint.js";
 import { parsePositiveIntEnv } from "./utils/envInt.js";
 
@@ -220,8 +220,21 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function socketOwnershipProblem(socketPath: string): string | null {
+  const st = fs.lstatSync(socketPath, { throwIfNoEntry: false });
+  if (!st) return null;
+  if (!st.isSocket()) return `${socketPath} is not a socket`;
+  if (!isOwnedByCurrentUser(st.uid)) return `${socketPath} is not owned by the current user`;
+  return null;
+}
+
 function connectSocket(socketPath: string): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
+    const problem = socketOwnershipProblem(socketPath);
+    if (problem) {
+      reject(Object.assign(new Error(`refusing to connect: ${problem}`), { code: "EUNSAFESOCKET" }));
+      return;
+    }
     const socket = net.createConnection(socketPath);
     const onConnect = () => {
       socket.off("error", onError);

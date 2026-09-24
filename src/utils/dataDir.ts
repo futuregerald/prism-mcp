@@ -66,3 +66,12 @@ export function getPrismDataDir(): string {
 
   return dir;
 }
+
+export function resolveProjectMediaDir(project: string): string {
+  const mediaRoot = path.join(getPrismDataDir(), "media");
+  const resolved = path.resolve(mediaRoot, project);
+  if (!project || !resolved.startsWith(mediaRoot + path.sep)) {
+    throw new Error(`[dataDir] Refusing project name ${JSON.stringify(project)}: it must stay inside the media directory`);
+  }
+  return resolved;
+}

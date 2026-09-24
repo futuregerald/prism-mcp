@@ -24,7 +24,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { getPrismDataDir } from "./dataDir.js";
+import { resolveProjectMediaDir } from "./dataDir.js";
 
 /**
  * Attempts to fetch an HTML snapshot from a list of local ports.
@@ -56,7 +56,7 @@ export async function captureLocalEnvironment(
         const html = await response.text();
 
         // Ensure vault exists
-        const mediaDir = path.join(getPrismDataDir(), "media", project);
+        const mediaDir = resolveProjectMediaDir(project);
         if (!fs.existsSync(mediaDir)) {
           fs.mkdirSync(mediaDir, { recursive: true });
         }

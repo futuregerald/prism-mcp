@@ -68,6 +68,12 @@ touch ~/.prism-mcp/shared-daemon
 
 With that file in the data directory, `dist/server.js` starts the shim instead of a full server, so every relaunch lands on the shared daemon without restarting the client.
 
+The marker applies to every client that uses this data directory:
+- It must be a regular file owned by you. A directory or symlink with that name is ignored.
+- Shared-daemon mode is Unix-only. On Windows, `dist/server.js` always runs the in-process server.
+- A client whose storage or credential settings differ from the running daemon's is refused with `-32001`. The settings compared are `PRISM_USER_ID`, `PRISM_STORAGE`, `PRISM_STORAGE_BACKEND`, `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_ANON_KEY`, `PRISM_JWT_ISSUER`, `PRISM_JWT_AUDIENCE`, `PRISM_DASHBOARD_*` and `PRISM_INSTANCE`. Give such a client `PRISM_SHARED_DAEMON=false`.
+- After upgrading Prism, run `node dist/daemon.js restart` so the running daemon picks up the new code and fingerprint rules.
+
 To override the marker per client, set `PRISM_SHARED_DAEMON` in that client's environment:
 - `PRISM_SHARED_DAEMON=false` (or `0`) always runs the in-process stdio server.
 - `PRISM_SHARED_DAEMON=true` (or `1`) always delegates to the daemon.
