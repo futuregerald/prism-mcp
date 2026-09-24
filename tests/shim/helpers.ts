@@ -37,14 +37,24 @@ export function daemonPidsForDataDir(dataDir: string): number[] {
     .filter(fields => fields.length >= 3 && fields[2].endsWith("dist/daemon.js"))
     .map(fields => parseInt(fields[0], 10))
     .filter(pid => Number.isFinite(pid) && pid !== process.pid);
-  return daemonPids.filter(pid => {
+  return daemonPids.filter(pid => pidHasEnvAssignment(pid, `PRISM_DATA_DIR=${dataDir}`));
+}
+
+function pidHasEnvAssignment(pid: number, envAssignment: string): boolean {
+  if (process.platform === "linux") {
     try {
-      const withEnv = execFileSync("ps", ["-E", "-p", String(pid), "-o", "args="], { encoding: "utf8" });
-      return withEnv.includes(`PRISM_DATA_DIR=${dataDir} `) || withEnv.trimEnd().endsWith(`PRISM_DATA_DIR=${dataDir}`);
+      const environ = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
+      return environ.split("\0").includes(envAssignment);
     } catch {
       return false;
     }
-  });
+  }
+  try {
+    const withEnv = execFileSync("ps", ["-E", "-p", String(pid), "-o", "args="], { encoding: "utf8" });
+    return withEnv.includes(`${envAssignment} `) || withEnv.trimEnd().endsWith(envAssignment);
+  } catch {
+    return false;
+  }
 }
 
 export async function terminateAllDaemonsForCreatedDataDirs(): Promise<void> {
@@ -66,7 +76,7 @@ export function makeShimEnv(home: string, dataDir: string, overrides: EnvOverrid
     PRISM_DATA_DIR: dataDir,
     PRISM_STORAGE: "local",
     PRISM_SCHEDULER_ENABLED: "false",
-    PRISM_DAEMON_IDLE_EXIT_MS: "0",
+    PRISM_DAEMON_IDLE_EXIT_MS: "60000",
     PRISM_ENABLE_HIVEMIND: "false",
     PRISM_ENABLE_DASHBOARD: "false",
     ...overrides,

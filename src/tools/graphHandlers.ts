@@ -344,8 +344,9 @@ export async function knowledgeForgetHandler(args: unknown) {
       if (!id) continue;
       try {
         await storage.deleteJob(`embed_ledger:${id}`);
+        await storage.purgeRequestLogEntriesContaining(id);
       } catch (cleanupErr) {
-        debugLog(`[knowledge_forget] Cleanup of job row for ${id} failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+        debugLog(`[knowledge_forget] Cleanup of job/request-log rows for ${id} failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
       }
     }
 

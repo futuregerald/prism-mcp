@@ -91,6 +91,22 @@ function isOrphanProcess(pid: number): boolean {
   }
 }
 
+export function isPrismServerProcess(pid: number): boolean {
+  if (process.platform === "win32") {
+    return false;
+  }
+
+  try {
+    const args = execFileSync("ps", ["-p", String(pid), "-o", "args="], {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
+    return args.includes("dist/server.js") || args.includes("prism-mcp-server");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Ensures valid server execution state.
  * 
@@ -124,7 +140,7 @@ export function acquireLock() {
 
         if (isAlive) {
           // Process exists. Is it a zombie?
-          if (isOrphanProcess(oldPid)) {
+          if (isOrphanProcess(oldPid) && isPrismServerProcess(oldPid)) {
             log(`Found zombie process (PID ${oldPid}, PPID=1). Terminating...`);
             try {
               process.kill(oldPid, "SIGTERM");

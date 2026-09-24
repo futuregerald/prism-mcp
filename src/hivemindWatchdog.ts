@@ -23,7 +23,6 @@
  */
 
 import { getStorage } from "./storage/index.js";
-import { getPrismDataDir } from "./utils/dataDir.js";
 import {
   PRISM_USER_ID,
   PRISM_VERIFICATION_HARNESS_ENABLED,
@@ -256,7 +255,7 @@ export async function runWatchdogSweep(
     if (!newStatus && (currentStatus === "active" || currentStatus === "failed_validation")) {
       // v7.2.0 FIX: Scope assertion file per project+role to prevent multi-agent collision
       const scopedFile = path.join(
-        getPrismDataDir(),
+        ".prism-mcp",
         `test_assertions_${agent.project}_${agent.role}.json`
       );
       // Also check the legacy global path for backward compat
@@ -494,7 +493,7 @@ function truncate(str: string, maxLen: number): string {
  */
 function cleanupAssertionFiles(agent: AgentRegistryEntry): void {
   const scopedFile = path.join(
-    getPrismDataDir(),
+    ".prism-mcp",
     `test_assertions_${agent.project}_${agent.role}.json`
   );
   const legacyFile = "test_assertions.json";

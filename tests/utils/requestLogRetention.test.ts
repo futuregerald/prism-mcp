@@ -60,4 +60,30 @@ describe("prism_request_log retention (B2)", () => {
       cleanup();
     }
   });
+
+  it("never sweeps a pending row, even once it is older than the retention window", async () => {
+    const { dbPath, cleanup } = await createTestDb("request-log-retention-pending");
+    try {
+      process.env.PRISM_DATA_DIR = dirname(dbPath);
+      process.env.PRISM_SCHEDULER_ENABLED = "false";
+      await closeStorage();
+      const storage = await getStorage();
+
+      const elevenMinAgo = Date.now() - 11 * 60 * 1000;
+      await (storage as any).db.execute({
+        sql: `INSERT INTO prism_request_log (key, args_hash, status, owner, response, created_at, updated_at)
+              VALUES (?, '', 'pending', 'owner-1', NULL, ?, ?)`,
+        args: ["retention-old-pending-key", elevenMinAgo, elevenMinAgo],
+      });
+
+      startRequestLogRetention(50);
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      const row = await storage.getRequestLogRow("retention-old-pending-key");
+      expect(row).not.toBeNull();
+      expect(row?.status).toBe("pending");
+    } finally {
+      cleanup();
+    }
+  });
 });

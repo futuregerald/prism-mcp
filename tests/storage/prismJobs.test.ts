@@ -10,7 +10,7 @@ describe("prism_jobs storage semantics", () => {
     cleanupFns = [];
   });
 
-  it("enqueueJob + claimNextJob + completeJob round-trip", async () => {
+  it("enqueueJob + claimNextJob + deleteJob round-trip", async () => {
     const { storage, cleanup } = await createTestDb("prism-jobs-roundtrip");
     cleanupFns.push(cleanup);
 
@@ -25,7 +25,7 @@ describe("prism_jobs storage semantics", () => {
     const again = await storage.claimNextJob(Date.now(), 60_000);
     expect(again).toBeNull();
 
-    await storage.completeJob("job-1");
+    await storage.deleteJob("job-1");
     const rows = await (storage as any).db.execute({
       sql: `SELECT * FROM prism_jobs WHERE id = ?`,
       args: ["job-1"],

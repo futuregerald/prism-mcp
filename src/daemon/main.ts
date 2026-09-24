@@ -3,22 +3,27 @@ import * as net from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-import { createServer, startBackgroundServices, getInFlightCount, beginRejectingNewToolCalls } from "../server.js";
+import { createServer, startBackgroundServices, getInFlightCount, beginRejectingNewToolCalls, holdNewToolCallsUnansweredDuringShutdown } from "../server.js";
 import { startStorage, getStorageReadyPromise } from "../storageReady.js";
 import { initConfigStorage } from "../storage/configStorage.js";
 import { initTelemetry } from "../utils/telemetry.js";
 import { registerServer, unregisterServer } from "../connectionRegistry.js";
 import { runWithRequestContext } from "../utils/requestContext.js";
 import { performResourceCleanup } from "../lifecycle.js";
-import { releaseDaemonLock, type LockPaths } from "./instanceLock.js";
+import { releaseDaemonLock, claimLockAsSocketOwner, type LockPaths } from "./instanceLock.js";
+import { computeConfigFingerprint } from "../utils/configFingerprint.js";
+import { parsePositiveIntEnv } from "../utils/envInt.js";
 
 function log(msg: string): void {
   console.error(`[prism-daemon] ${msg}`);
 }
 
+const OWN_CONFIG_FINGERPRINT = computeConfigFingerprint();
+
 interface HelloResult {
   cwd?: string;
   clientId?: string;
+  configFingerprint?: string;
 }
 
 interface AdminHello {
@@ -26,7 +31,7 @@ interface AdminHello {
 }
 
 const HELLO_MAX_BYTES = 4096;
-const HELLO_TIMEOUT_MS = 5000;
+const HELLO_TIMEOUT_MS = 30_000;
 
 function pauseSocketToProtectUnshiftedBytes(
   socket: net.Socket,
@@ -42,13 +47,26 @@ function resumeSocketAfterTransportWired(socket: net.Socket): void {
   socket.resume();
 }
 
-async function waitForStorageReady(): Promise<void> {
+const STORAGE_READY_TIMEOUT_MS = 30_000;
+
+async function waitForStorageReady(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   let promise = getStorageReadyPromise();
   while (!promise) {
+    if (Date.now() >= deadline) return false;
     await new Promise(resolve => setTimeout(resolve, 10));
     promise = getStorageReadyPromise();
   }
-  await promise;
+
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return false;
+
+  const TIMEOUT = Symbol("storage-ready-timeout");
+  const result = await Promise.race([
+    promise.then(() => true as const),
+    new Promise<typeof TIMEOUT>(resolve => setTimeout(() => resolve(TIMEOUT), remainingMs)),
+  ]);
+  return result !== TIMEOUT;
 }
 
 function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
@@ -114,7 +132,11 @@ function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
             if (rest.length > 0) {
               socket.unshift(rest);
             }
-            resolve({ cwd: parsed.prism_hello.cwd, clientId: parsed.prism_hello.clientId });
+            resolve({
+              cwd: parsed.prism_hello.cwd,
+              clientId: parsed.prism_hello.clientId,
+              configFingerprint: parsed.prism_hello.configFingerprint,
+            });
             return;
           }
         } catch {
@@ -130,6 +152,20 @@ function readHello(socket: net.Socket): Promise<HelloResult | AdminHello> {
   });
 }
 
+const DEFAULT_MAX_LINE_BYTES = 64 * 1024 * 1024;
+
+function destroySocketOnOversizedLine(socket: net.Socket, maxLineBytes: number): void {
+  let bytesSinceNewline = 0;
+  socket.on("data", (chunk: Buffer) => {
+    const lastNewline = chunk.lastIndexOf(0x0a);
+    bytesSinceNewline = lastNewline === -1 ? bytesSinceNewline + chunk.length : chunk.length - lastNewline - 1;
+    if (bytesSinceNewline > maxLineBytes) {
+      log(`Closing connection: a single line exceeded ${maxLineBytes} bytes`);
+      socket.destroy();
+    }
+  });
+}
+
 function isAdminHello(hello: HelloResult | AdminHello): hello is AdminHello {
   return typeof (hello as AdminHello).action === "string";
 }
@@ -138,10 +174,6 @@ async function handleConnection(
   socket: net.Socket,
   requestShutdown: (reason: string) => void
 ): Promise<void> {
-  socket.pause();
-  await waitForStorageReady();
-  socket.resume();
-
   let hello: HelloResult | AdminHello;
   try {
     hello = await readHello(socket);
@@ -161,6 +193,19 @@ async function handleConnection(
     return;
   }
 
+  const storageReady = await waitForStorageReady(STORAGE_READY_TIMEOUT_MS);
+  if (!storageReady) {
+    log("Closing MCP connection: storage was not ready within the startup deadline");
+    socket.destroy();
+    return;
+  }
+
+  if (hello.configFingerprint !== undefined && hello.configFingerprint !== OWN_CONFIG_FINGERPRINT) {
+    socket.write(JSON.stringify({ prism_hello_error: { reason: "config_mismatch" } }) + "\n");
+    socket.end();
+    return;
+  }
+
   const server = createServer();
   const transport = new StdioServerTransport(socket, socket);
 
@@ -172,6 +217,8 @@ async function handleConnection(
       connected?.(message);
     });
   };
+
+  destroySocketOnOversizedLine(socket, parsePositiveIntEnv(process.env.PRISM_DAEMON_MAX_LINE_BYTES, DEFAULT_MAX_LINE_BYTES));
 
   resumeSocketAfterTransportWired(socket);
 
@@ -187,7 +234,7 @@ async function handleConnection(
 
 export async function runDaemonMain(paths: LockPaths): Promise<void> {
   const connections = new Set<net.Socket>();
-  const idleExitMs = parseInt(process.env.PRISM_DAEMON_IDLE_EXIT_MS ?? "1800000", 10);
+  const idleExitMs = parsePositiveIntEnv(process.env.PRISM_DAEMON_IDLE_EXIT_MS, 1_800_000);
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
 
@@ -236,13 +283,17 @@ export async function runDaemonMain(paths: LockPaths): Promise<void> {
   log(`Listening on ${paths.socketPath} (pid ${process.pid})`);
 
   const ownInode = fs.statSync(paths.socketPath).ino;
+  const listeningSince = Date.now();
+  claimLockAsSocketOwner(paths, listeningSince);
   const inodeCheckInterval = setInterval(() => {
     try {
       const currentInode = fs.statSync(paths.socketPath).ino;
       if (currentInode !== ownInode) {
         log("Socket path inode changed under us (takeover race) — shutting down");
         void gracefulShutdown("inode-mismatch");
+        return;
       }
+      if (!shuttingDown) claimLockAsSocketOwner(paths, listeningSince);
     } catch {
       log("Socket path vanished under us — shutting down");
       void gracefulShutdown("socket-missing");
@@ -266,6 +317,7 @@ export async function runDaemonMain(paths: LockPaths): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     beginRejectingNewToolCalls();
+    holdNewToolCallsUnansweredDuringShutdown();
     clearIdleTimer();
     clearInterval(inodeCheckInterval);
     log(`Shutting down gracefully (${reason})...`);

@@ -129,4 +129,36 @@ describe("job worker resilience (B3)", () => {
       cleanup();
     }
   });
+
+  it("stopJobWorker gives up waiting on a stalled job after its cap instead of hanging", async () => {
+    const { dbPath, cleanup } = await createTestDb("worker-resilience-stall");
+    try {
+      process.env.PRISM_DATA_DIR = dirname(dbPath);
+      await closeStorage();
+      const storage = await getStorageRetryingOnBusy();
+
+      let handlerStarted = false;
+      registerJobHandler("test_never_resolves", async () => {
+        handlerStarted = true;
+        await new Promise(() => { });
+      });
+
+      await storage.enqueueJob(`stall:${randomUUID()}`, "test_never_resolves", "{}");
+      await startJobWorker({ pollMs: 20 });
+
+      const deadline = Date.now() + 5000;
+      while (!handlerStarted && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(handlerStarted).toBe(true);
+
+      const stopStarted = Date.now();
+      await stopJobWorker(200);
+      const elapsedMs = Date.now() - stopStarted;
+
+      expect(elapsedMs).toBeLessThan(2000);
+    } finally {
+      cleanup();
+    }
+  });
 });

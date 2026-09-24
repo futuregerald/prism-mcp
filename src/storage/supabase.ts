@@ -51,6 +51,8 @@ import { runAutoMigrations } from "./supabaseMigrations.js";
 import { SafetyController } from "../darkfactory/safetyController.js";
 
 export class SupabaseStorage implements StorageBackend {
+  readonly supportsJobQueue = false;
+
   // ─── Lifecycle ─────────────────────────────────────────────
 
   async initialize(): Promise<void> {
@@ -1090,9 +1092,6 @@ export class SupabaseStorage implements StorageBackend {
 
   async claimNextJob(_nowMs: number, _leaseMs: number): Promise<PrismJob | null> {
     return null;
-  }
-
-  async completeJob(_id: string): Promise<void> {
   }
 
   async deleteJob(_id: string): Promise<void> {

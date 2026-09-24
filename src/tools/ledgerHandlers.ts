@@ -32,6 +32,8 @@ import { kickJobWorker } from "../jobs/worker.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, getAllSettings } from "../storage/configStorage.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
+import { generateAndPatchLedgerEmbedding } from "./hygieneHandlers.js";
+import { BackgroundTaskRegistry } from "../lifecycle.js";
 
 // ─── Phase 1: Explainability & Memory Lineage ────────────────
 // These utilities provide structured tracing metadata for search operations.
@@ -216,6 +218,23 @@ export async function sessionSaveLedgerHandler(args: unknown) {
         limit: "1",
       });
       if (existing.length > 0) {
+        const existingEntry = existing[0] as any;
+        const contentMatches =
+          existingEntry.summary === summary &&
+          existingEntry.project === project &&
+          existingEntry.conversation_id === conversation_id;
+
+        if (!contentMatches) {
+          return {
+            content: [{
+              type: "text",
+              text: `⚠️ Idempotency key reused with different content for ledger entry ${idempotentId}. ` +
+                `The original save was left unchanged; this request was not applied.`,
+            }],
+            isError: true,
+          };
+        }
+
         debugLog(`[session_save_ledger] Idempotent retry — ledger row ${idempotentId} already exists, returning stored row`);
         alreadySaved = true;
         result = existing;
@@ -237,8 +256,21 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
-      kickJobWorker();
+      if (storage.supportsJobQueue) {
+        try {
+          await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
+          kickJobWorker();
+        } catch (err) {
+          debugLog(`[session_save_ledger] Failed to enqueue embedding job for ${entryId} (non-fatal, recovery sweep will retry): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        const embeddingText = [summary, ...(decisions || [])].join("\n");
+        BackgroundTaskRegistry.register(
+          generateAndPatchLedgerEmbedding(storage, entryId, embeddingText).catch((err) => {
+            console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          })
+        );
+      }
     }
   }
 
@@ -1476,13 +1508,26 @@ export async function sessionSaveExperienceHandler(args: unknown) {
     importance: event_type === "correction" ? 1 : 0,
   });
 
+  let entryId: string | undefined;
   if (result) {
     const savedEntry = Array.isArray(result) ? result[0] : result;
-    const entryId = (savedEntry as any)?.id;
+    entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
-      kickJobWorker();
+      if (storage.supportsJobQueue) {
+        try {
+          await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
+          kickJobWorker();
+        } catch (err) {
+          debugLog(`[session_save_experience] Failed to enqueue embedding job for ${entryId} (non-fatal, recovery sweep will retry): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        BackgroundTaskRegistry.register(
+          generateAndPatchLedgerEmbedding(storage, entryId, summary).catch((err) => {
+            console.error(`[session_save_experience] Embedding generation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          })
+        );
+      }
     }
   }
 
@@ -1492,7 +1537,8 @@ export async function sessionSaveExperienceHandler(args: unknown) {
       text: `✅ Experience recorded: ${event_type} for project "${project}"\n` +
         `Summary: ${summary}\n` +
         (confidence_score !== undefined ? `Confidence: ${confidence_score}%\n` : "") +
-        `Importance: ${event_type === "correction" ? 1 : 0} (upvote to increase)`,
+        `Importance: ${event_type === "correction" ? 1 : 0} (upvote to increase)` +
+        (entryId ? `\nID: ${entryId}` : ""),
     }],
     isError: false,
   };

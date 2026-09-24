@@ -665,11 +665,11 @@ export interface StorageBackend {
 
   pruneRequestLog(olderThanMs: number): Promise<void>;
 
+  readonly supportsJobQueue: boolean;
+
   enqueueJob(id: string, kind: string, payload: string): Promise<void>;
 
   claimNextJob(nowMs: number, leaseMs: number): Promise<PrismJob | null>;
-
-  completeJob(id: string): Promise<void>;
 
   deleteJob(id: string): Promise<void>;
 

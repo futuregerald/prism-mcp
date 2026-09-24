@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as net from "node:net";
-import { getSocketPath, acquireDaemonLock } from "./daemon/instanceLock.js";
+import { getSocketPath, acquireDaemonLock, releaseDaemonLock } from "./daemon/instanceLock.js";
+import { checkExplicitSocketPath } from "./utils/dataDir.js";
 
 function requestShutdownOverSocket(socketPath: string): Promise<boolean> {
   return new Promise(resolve => {
@@ -36,6 +37,14 @@ async function runPruneZeroSdm(): Promise<void> {
 }
 
 async function runDaemon(): Promise<void> {
+  if (process.env.PRISM_SOCKET) {
+    const check = checkExplicitSocketPath(process.env.PRISM_SOCKET);
+    if (!check.ok) {
+      console.error(`[prism-daemon] Refusing PRISM_SOCKET: ${check.reason}`);
+      process.exit(1);
+    }
+  }
+
   const lock = await acquireDaemonLock();
   if (lock.alreadyRunning) {
     console.error("[prism-daemon] Another daemon is already running on this data dir — exiting");
@@ -45,8 +54,13 @@ async function runDaemon(): Promise<void> {
 
   process.env.PRISM_ACTR_WRITE_THROUGH = "true";
 
-  const { runDaemonMain } = await import("./daemon/main.js");
-  await runDaemonMain(lock.paths);
+  try {
+    const { runDaemonMain } = await import("./daemon/main.js");
+    await runDaemonMain(lock.paths);
+  } catch (err) {
+    releaseDaemonLock(lock.paths, -1);
+    throw err;
+  }
 }
 
 async function main(): Promise<void> {

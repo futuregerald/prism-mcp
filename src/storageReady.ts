@@ -7,7 +7,7 @@ export function isStorageReady(): boolean {
   return storageIsReady;
 }
 
-export function markStorageReady(): void {
+function markStorageReady(): void {
   storageIsReady = true;
 }
 
