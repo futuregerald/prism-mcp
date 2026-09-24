@@ -803,17 +803,34 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
-    await this.db.execute(`
-      CREATE TABLE IF NOT EXISTS prism_request_log (
-        key TEXT PRIMARY KEY,
-        args_hash TEXT NOT NULL,
-        status TEXT NOT NULL,
-        owner TEXT NOT NULL,
-        response TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
+    await this.db.execute("BEGIN IMMEDIATE");
+    try {
+      const requestLogColumns = await this.db.execute("PRAGMA table_info(prism_request_log)");
+      const requestLogIsEarlyLayout =
+        requestLogColumns.rows.length > 0 &&
+        !requestLogColumns.rows.some(r => (r as unknown as { name: string }).name === "args_hash");
+      if (requestLogIsEarlyLayout) {
+        const leftover = await this.db.execute("SELECT count(*) AS n FROM prism_request_log");
+        debugLog(`[SqliteStorage] Rebuilding early-layout prism_request_log (dropping ${Number((leftover.rows[0] as unknown as { n: number }).n)} replay rows)`);
+        await this.db.execute("DROP TABLE prism_request_log");
+      }
+
+      await this.db.execute(`
+        CREATE TABLE IF NOT EXISTS prism_request_log (
+          key TEXT PRIMARY KEY,
+          args_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          response TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      await this.db.execute("COMMIT");
+    } catch (err) {
+      await this.db.execute("ROLLBACK").catch(() => { });
+      throw err;
+    }
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_prism_request_log_created_at ON prism_request_log(created_at)`
     );
@@ -829,6 +846,7 @@ export class SqliteStorage implements StorageBackend {
         created_at INTEGER NOT NULL
       )
     `);
+    await this.db.execute("DROP INDEX IF EXISTS idx_prism_jobs_run_after");
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_prism_jobs_run_after_active ON prism_jobs(run_after) WHERE attempts < 5`
     );

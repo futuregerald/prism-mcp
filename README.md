@@ -689,7 +689,7 @@ Standard RAG (Retrieval-Augmented Generation) is now a commodity. Everyone has v
 | **Confidence** | Always 100% confident (even when wrong) | Measures gap-distance and entropy |
 | **Hallucination risk** | High — LLM gets garbage context | Low — LLM told "you don't know" |
 
-**How it works:** The **Uncertainty-Aware Rejection Gate** operates on two signals: *similarity floor* (is the best match even remotely relevant?) and *gap distance* (is there meaningful separation between the top results, or are they all equally mediocre?). When both signals indicate low confidence, Prism returns a structured rejection — telling the LLM "I searched my memory, and I confidently do not know the answer" — instead of feeding it garbage context that causes hallucinations. In the current LLM landscape, **an agent that knows its own boundaries is a massive competitive advantage.**
+**How it works:** The **Uncertainty-Aware Rejection Gate** is part of the HDC cognitive-routing feature and only runs when `PRISM_HDC_ENABLED=true`. Otherwise `session_search_memory` filters results by `similarity_threshold` alone. It operates on two signals: *similarity floor* (is the best match even remotely relevant?) and *gap distance* (is there meaningful separation between the top results, or are they all equally mediocre?). When both signals indicate low confidence, Prism returns a structured rejection — telling the LLM "I searched my memory, and I confidently do not know the answer" — instead of feeding it garbage context that causes hallucinations. In the current LLM landscape, **an agent that knows its own boundaries is a massive competitive advantage.**
 
 ### 4. Block Amnesia Solved (Dynamic Fast Weight Decay)
 
