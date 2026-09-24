@@ -1,14 +1,3 @@
-/**
- * Tools whose handlers write to the storage backend (SQLite/Supabase rows,
- * not incidental filesystem side effects like an export or an IDE rules
- * file). Used by the idempotency layer in server.ts's CallTool handler:
- * only these tool names are eligible for `_meta["prism/idempotencyKey"]`
- * caching, so responses for read-only tools and image blobs are never
- * written to `prism_request_log`.
- *
- * See docs/plans/2026-09-24-prism-shared-daemon-handoff-phase2.md for the
- * per-tool reasoning behind this list.
- */
 export const MUTATING_TOOLS: readonly string[] = [
   "session_save_ledger",
   "session_save_handoff",

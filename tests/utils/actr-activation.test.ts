@@ -611,8 +611,6 @@ describe("AccessLogBuffer", () => {
     expect(mockDb.execute).toHaveBeenCalledTimes(1);
   });
 
-  // ── Write-Through Mode (writeThrough: true) ────────────────────
-
   it("should insert immediately on push() when writeThrough is true", async () => {
     const { AccessLogBuffer } = await import(
       "../../src/utils/accessLogBuffer.js"

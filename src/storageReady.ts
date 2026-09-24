@@ -1,11 +1,3 @@
-/**
- * Storage readiness tracking, shared between stdio and daemon startup paths.
- *
- * The module-private flag/promise pair used to live inline in server.ts.
- * Both startServer() (stdio) and the daemon's main.ts now call startStorage()
- * so resource/prompt handlers see the same readiness signal in either mode.
- */
-
 import { getStorage } from "./storage/index.js";
 
 let storageReadyPromise: Promise<void> | null = null;
@@ -23,10 +15,6 @@ export function getStorageReadyPromise(): Promise<void> | null {
   return storageReadyPromise;
 }
 
-/**
- * Pre-warms the storage singleton, racing it against a timeout so callers
- * never block on a slow backend (e.g. Supabase REST init).
- */
 export async function startStorage(): Promise<void> {
   const STORAGE_TIMEOUT_MS = 10_000;
 

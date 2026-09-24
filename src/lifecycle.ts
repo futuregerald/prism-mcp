@@ -13,6 +13,7 @@ import { closeConfigStorage } from "./storage/configStorage.js";
 import { getStorage } from "./storage/index.js";
 import { shutdownTelemetry } from "./utils/telemetry.js";
 import { getPrismDataDir } from "./utils/dataDir.js";
+import { stopJobWorker } from "./jobs/worker.js";
 
 /**
  * Instance-aware PID file.
@@ -160,14 +161,9 @@ export function acquireLock() {
 /**
  * Registers handlers to close SQLite file handles cleanly when the server stops.
  */
-/**
- * Shared resource-teardown steps used by both stdio shutdown (below) and
- * the daemon's own graceful shutdown (src/daemon/main.ts), which has
- * different pre/post steps (draining in-flight calls, removing the daemon
- * lock/socket instead of the PID file) but the same DB/telemetry/SDM
- * cleanup in the middle.
- */
 export async function performResourceCleanup(logFn: (msg: string) => void = log): Promise<void> {
+  await stopJobWorker();
+
   // 0. Stop the Dark Factory background runner first (prevents new DB writes)
   try {
     const { stopDarkFactoryRunner } = await import("./darkfactory/runner.js");

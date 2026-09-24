@@ -6,10 +6,6 @@ import { getPrismDataDir } from "../utils/dataDir.js";
 // This solves the chicken-and-egg problem: we need to know WHICH
 // storage backend to boot *before* we can use that backend.
 //
-// Stored in $PRISM_DATA_DIR/prism-config.db (default ~/.prism-mcp) —
-// the same root directory used by sqlite.ts and autoCapture.ts for
-// all Prism files.
-//
 // ⚡ BOOT SETTINGS NOTE:
 //   Settings in this store that affect server initialization (e.g.
 //   PRISM_STORAGE, PRISM_ENABLE_HIVEMIND) are read only at startup.

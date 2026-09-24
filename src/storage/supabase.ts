@@ -40,6 +40,7 @@ import {
   PipelineStatus,          // v7.3: Dark Factory Pipeline
   VerificationHarness,     // v7.2.0: Verification Harness
   ValidationResult,        // v7.2.0: Verification Harness
+  PrismJob,
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
@@ -1062,20 +1063,27 @@ export class SupabaseStorage implements StorageBackend {
     return { pruned: [] };
   }
 
-  // ─── Shared Daemon Phase 2: Idempotent Request Log ───────────
-  // Out of scope for Supabase mode in this spike — the daemon is a local-only
-  // (SQLite) feature, so these are no-ops rather than a real implementation.
-
   async getRequestLog(_key: string): Promise<string | null> {
     return null;
   }
 
   async putRequestLog(_key: string, _responseJson: string): Promise<void> {
-    // no-op
   }
 
   async pruneRequestLog(_olderThanMs: number): Promise<void> {
-    // no-op
+  }
+
+  async enqueueJob(_id: string, _kind: string, _payload: string): Promise<void> {
+  }
+
+  async claimNextJob(_nowMs: number, _leaseMs: number): Promise<PrismJob | null> {
+    return null;
+  }
+
+  async completeJob(_id: string): Promise<void> {
+  }
+
+  async failJob(_id: string, _error: string, _retryAtMs: number): Promise<void> {
   }
 
   // ─── HDC Dictionary (Concept Vectors) ───────────────────────────

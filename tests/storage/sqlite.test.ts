@@ -617,10 +617,6 @@ describe("Dark Factory Pipelines & Verification Harness", () => {
     expect(list.some((r: any) => r.id === VR_ID)).toBe(true);
   });
 
-  // ═══════════════════════════════════════════════════════════════════
-  // SDM PERSISTENCE (Phase 1 — shared daemon spike)
-  // ═══════════════════════════════════════════════════════════════════
-
   describe("SDM Persistence", () => {
     it("saveSdmState skips the DB write when every counter is 0", async () => {
       const project = "sdm-persist-all-zero";

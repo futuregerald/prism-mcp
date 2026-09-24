@@ -57,7 +57,7 @@ describe("stdio mode still works after the Phase 2 refactor", () => {
             pending.delete(msg.id);
             resolve(msg);
           }
-        } catch { /* ignore non-JSON stdout noise */ }
+        } catch { }
       }
     });
 

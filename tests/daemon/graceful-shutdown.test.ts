@@ -49,15 +49,9 @@ describe("daemon graceful shutdown (R6)", () => {
       },
     });
 
-    // Give the handler time to enter its artificial delay before signalling.
     await new Promise(resolve => setTimeout(resolve, 300));
     proc.kill("SIGTERM");
 
-    // NOTE: not asserting isError here — a sandbox without GOOGLE_API_KEY
-    // makes session_save_ledger's embedding kick-off throw synchronously
-    // (pre-existing gap, out of scope), even though storage.saveLedger()
-    // already committed. The response arriving at all, and the row existing
-    // after the daemon exits, is what this test is actually verifying (R6).
     const response = await client.waitFor(50, 15_000);
     expect(response.result).toBeDefined();
 

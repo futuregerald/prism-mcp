@@ -161,10 +161,6 @@ describe('SDM Engine — Edge Cases & Error Guards', () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// hasWrites TRACKING (Phase 1 — shared daemon spike)
-// ═══════════════════════════════════════════════════════════════════
-
 describe('SDM Engine — hasWrites tracking', () => {
   it('a fresh engine has hasWrites=false', () => {
     const sdm = new SparseDistributedMemory(1001);
@@ -194,20 +190,6 @@ describe('SDM Engine — hasWrites tracking', () => {
     expect(sdm.hasWrites).toBe(true);
   });
 });
-
-// ═══════════════════════════════════════════════════════════════════
-// hasSdmEngine (Phase 1 — shared daemon spike)
-// ═══════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════
-// ZERO-ENGINE RECALL EQUIVALENCE (Phase 1 — shared daemon spike)
-//
-// Backs the optimization in ledgerHandlers.ts/graphHandlers.ts that
-// skips getSdmEngine() (and its ~31 MB allocation) for a project with
-// no persisted or in-memory SDM state, substituting a zero vector.
-// This proves that substitution returns exactly what a freshly
-// allocated, never-written engine would have returned anyway.
-// ═══════════════════════════════════════════════════════════════════
 
 describe('recall from a never-written engine is equivalent to a zero vector', () => {
   it('read() on a fresh engine returns the same all-zero vector as skipping allocation', () => {

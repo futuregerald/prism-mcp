@@ -1,12 +1,3 @@
-/**
- * Single-instance locking for the shared daemon (builtins-only — no SDK,
- * no server.ts, nothing that would slow down the daemon.js bootstrap).
- *
- * The Unix socket is the source of truth (R7): a reused PID can never wedge
- * the lock, because staleness is decided by whether the socket accepts a
- * connection, not by `kill(pid, 0)`.
- */
-
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
@@ -100,13 +91,11 @@ async function acquireOnce(paths: LockPaths, allowRetryOnEexist: boolean): Promi
       if (cameUp) {
         return { alreadyRunning: true, paths };
       }
-      // Peer never came up within the wait window — treat the lock as stale.
     }
   }
 
-  // Stale or absent: break it and retake it.
-  try { fs.unlinkSync(lockPath); } catch { /* absent is fine */ }
-  try { fs.unlinkSync(socketPath); } catch { /* absent is fine */ }
+  try { fs.unlinkSync(lockPath); } catch { }
+  try { fs.unlinkSync(socketPath); } catch { }
 
   const contents: LockFileContents = { pid: process.pid, startedAt: Date.now() };
   const wrote = writeLockExclusive(lockPath, contents);
@@ -134,7 +123,7 @@ export async function acquireDaemonLock(): Promise<LockResult> {
 export function releaseDaemonLock(paths: LockPaths): void {
   const lock = readLock(paths.lockPath);
   if (lock && lock.pid === process.pid) {
-    try { fs.unlinkSync(paths.lockPath); } catch { /* already gone */ }
+    try { fs.unlinkSync(paths.lockPath); } catch { }
   }
-  try { fs.unlinkSync(paths.socketPath); } catch { /* already gone */ }
+  try { fs.unlinkSync(paths.socketPath); } catch { }
 }

@@ -49,10 +49,6 @@ describe("daemon concurrent clients (R3)", () => {
     const clientB = await initClient(socketPath, "/tmp/project-b", "client-b");
 
     try {
-      // session_load_context and resources/list are both backed by
-      // session_handoffs (not session_ledger — session_save_ledger's
-      // embedding kick-off also needs an LLM provider, which this sandbox
-      // has none configured for), so use session_save_handoff here.
       clientA.send({
         jsonrpc: "2.0",
         id: 10,

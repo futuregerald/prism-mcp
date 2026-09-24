@@ -43,6 +43,7 @@ import type {
   VerificationHarness,     // v7.2.0
   ValidationResult,        // v7.2.0
   SpreadingActivationOptions, // v8.0: Spreading Activation
+  PrismJob,
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
@@ -800,7 +801,6 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
-    // ─── Shared Daemon Phase 2 Migration: Idempotent Request Log ────────
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS prism_request_log (
         key TEXT PRIMARY KEY,
@@ -808,6 +808,21 @@ export class SqliteStorage implements StorageBackend {
         created_at INTEGER NOT NULL
       )
     `);
+
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS prism_jobs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        run_after INTEGER NOT NULL,
+        last_error TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_jobs_run_after ON prism_jobs(run_after)`
+    );
 
     // ─── v6.1 Migration: Integrity Check ──────────────────────
     //
@@ -2857,8 +2872,6 @@ export class SqliteStorage implements StorageBackend {
     return { pruned };
   }
 
-  // ─── Shared Daemon Phase 2: Idempotent Request Log ────────────────────
-
   async getRequestLog(key: string): Promise<string | null> {
     const result = await this.db.execute({
       sql: `SELECT response FROM prism_request_log WHERE key = ?`,
@@ -2882,6 +2895,55 @@ export class SqliteStorage implements StorageBackend {
     await this.db.execute({
       sql: `DELETE FROM prism_request_log WHERE created_at < ?`,
       args: [cutoff],
+    });
+  }
+
+  async enqueueJob(id: string, kind: string, payload: string): Promise<void> {
+    await this.db.execute({
+      sql: `INSERT INTO prism_jobs (id, kind, payload, attempts, run_after, created_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            ON CONFLICT(id) DO NOTHING`,
+      args: [id, kind, payload, Date.now(), Date.now()],
+    });
+  }
+
+  async claimNextJob(nowMs: number, leaseMs: number): Promise<PrismJob | null> {
+    const result = await this.db.execute({
+      sql: `UPDATE prism_jobs
+            SET run_after = ?, attempts = attempts + 1
+            WHERE id = (
+              SELECT id FROM prism_jobs
+              WHERE run_after <= ? AND attempts < 5
+              ORDER BY run_after ASC
+              LIMIT 1
+            )
+            RETURNING id, kind, payload, attempts, run_after, last_error, created_at`,
+      args: [nowMs + leaseMs, nowMs],
+    });
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      id: row.id as string,
+      kind: row.kind as string,
+      payload: row.payload as string,
+      attempts: row.attempts as number,
+      run_after: row.run_after as number,
+      last_error: (row.last_error as string) ?? null,
+      created_at: row.created_at as number,
+    };
+  }
+
+  async completeJob(id: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_jobs WHERE id = ?`,
+      args: [id],
+    });
+  }
+
+  async failJob(id: string, error: string, retryAtMs: number): Promise<void> {
+    await this.db.execute({
+      sql: `UPDATE prism_jobs SET last_error = ?, run_after = ? WHERE id = ?`,
+      args: [error, retryAtMs, id],
     });
   }
 

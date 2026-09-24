@@ -1,12 +1,3 @@
-/**
- * Shared helpers for the daemon integration tests (Phase 2).
- *
- * Every test using these helpers MUST supply its own fresh HOME/PRISM_DATA_DIR
- * (via fs.mkdtempSync(path.join(os.tmpdir(), "prd-")) — os.tmpdir() keeps the
- * Unix socket path under macOS's 104-byte limit). Daemons are only ever killed
- * by the pid returned from spawn(), never by pattern-matching.
- */
-
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import * as net from "node:net";
 import * as path from "node:path";
@@ -22,7 +13,6 @@ export function getDaemonEntry(): string {
 
 let builtThisProcess = false;
 
-/** Builds dist/ once per test worker process, only if it isn't already there. */
 export function ensureDaemonBuilt(): void {
   if (builtThisProcess && fs.existsSync(DAEMON_ENTRY)) return;
   if (!fs.existsSync(DAEMON_ENTRY)) {
@@ -94,7 +84,7 @@ export function killProc(proc: ChildProcess): Promise<void> {
       return;
     }
     const timer = setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      try { proc.kill("SIGKILL"); } catch { }
     }, 3000);
     proc.once("exit", () => {
       clearTimeout(timer);

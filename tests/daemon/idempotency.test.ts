@@ -36,13 +36,6 @@ describe("daemon idempotent retries (M3 + prism_request_log)", () => {
   });
 
   it("returns the identical response for a repeated idempotency key, with the handler run exactly once", async () => {
-    // Uses session_save_handoff rather than session_save_ledger: the ledger
-    // handler's fire-and-forget embedding kick-off calls getLLMProvider(),
-    // which throws in a sandbox with no GOOGLE_API_KEY configured — unrelated
-    // to the idempotency layer this test is verifying. session_save_handoff
-    // has no such dependency, and its response embeds an OCC version number
-    // that only advances if the handler actually re-runs, which makes it a
-    // clean way to prove the CallTool-level cache short-circuited the retry.
     const client = await connectRawClient(socketPath);
     const idempotencyKey = "test-client:call-42";
 
@@ -74,9 +67,6 @@ describe("daemon idempotent retries (M3 + prism_request_log)", () => {
       client.close();
     }
 
-    // If the handler had re-run on the second call, the OCC version would
-    // have advanced to 2. A second storage instance on the same on-disk DB
-    // file confirms it's still 1 — the handler only ran once.
     const storage = new SqliteStorage();
     await storage.initialize(path.join(dataDir, "data.db"));
     try {

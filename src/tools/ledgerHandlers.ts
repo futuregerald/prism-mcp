@@ -28,6 +28,7 @@ import { debugLog } from "../utils/logger.js";
 import { getStorage, activeStorageBackend } from "../storage/index.js";
 import { toKeywordArray } from "../utils/keywordExtractor.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
+import { kickJobWorker } from "../jobs/worker.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, getAllSettings } from "../storage/configStorage.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
@@ -131,13 +132,6 @@ const MEMORY_BOUNDARY_SUFFIX = '\n</prism_memory>';
  * After saving, generates an embedding vector for the entry via fire-and-forget.
  */
 import { computeEffectiveImportance, recordMemoryAccess } from "../utils/cognitiveMemory.js";
-/**
- * Derives a deterministic, RFC4122 v4-shaped UUID from an idempotency key.
- * A retried session_save_ledger call with the same key produces the same
- * id, so a crash between the ledger INSERT and the daemon's response-log
- * write still can't double-apply the save: the retry's INSERT hits the
- * ledger's PRIMARY KEY and is treated as "already saved" (see M3).
- */
 function deriveIdempotentLedgerId(idempotencyKey: string): string {
   const hex = createHash("sha256").update(`ledger:${idempotencyKey}`).digest("hex").slice(0, 32);
   return [
@@ -154,8 +148,6 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     throw new Error("Invalid arguments for session_save_ledger");
   }
 
-  // TEST-ONLY hook (spike): lets the daemon graceful-shutdown test hold a
-  // save in flight long enough to send SIGTERM before it completes.
   const testDelayMs = parseInt(process.env.PRISM_TEST_SAVE_DELAY_MS || "0", 10);
   if (testDelayMs > 0) {
     await new Promise(resolve => setTimeout(resolve, testDelayMs));
@@ -226,42 +218,14 @@ export async function sessionSaveLedgerHandler(args: unknown) {
     }
   }
 
-  // ─── Fire-and-forget embedding generation ───
   if (result && !alreadySaved) {
     const embeddingText = [summary, ...(decisions || [])].join("\n");
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          // Build atomic patch — float32 + TurboQuant in ONE DB update
-          const patchData: Record<string, unknown> = {
-            embedding: JSON.stringify(embedding),
-          };
-
-          // TurboQuant: compress alongside float32 (non-fatal)
-          try {
-            const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
-            const compressor = getDefaultCompressor();
-            const compressed = compressor.compress(embedding);
-            const buf = serialize(compressed);
-
-            patchData.embedding_compressed = buf.toString("base64");
-            patchData.embedding_format = `turbo${compressor.bits}`;
-            patchData.embedding_turbo_radius = compressed.radius;
-            debugLog(`[session_save_ledger] TurboQuant compressed: ${buf.length} bytes (${(3072 / buf.length).toFixed(1)}× ratio)`);
-          } catch (turboErr: any) {
-            console.error(`[session_save_ledger] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
-          }
-
-          // Single atomic DB update for all embedding data
-          await storage.patchLedger(entryId, patchData);
-          debugLog(`[session_save_ledger] Embedding saved for entry ${entryId}`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err.message}`);
-        });
+      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId, text: embeddingText }));
+      kickJobWorker();
     }
   }
 
@@ -1485,23 +1449,14 @@ export async function sessionSaveExperienceHandler(args: unknown) {
     importance: event_type === "correction" ? 1 : 0,
   });
 
-  // Fire-and-forget embedding generation
   if (result) {
     const embeddingText = summary;
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          await storage.patchLedger(entryId, {
-            embedding: JSON.stringify(embedding),
-          });
-          debugLog(`[session_save_experience] Embedding saved for entry ${entryId}`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_experience] Embedding failed (non-fatal): ${err.message}`);
-        });
+      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId, text: embeddingText }));
+      kickJobWorker();
     }
   }
 

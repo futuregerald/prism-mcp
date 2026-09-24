@@ -38,7 +38,6 @@ describe("daemon single-instance locking (R7)", () => {
     const socketPath = getSocketPath(dataDir);
     await waitForSocket(socketPath, 15_000);
 
-    // Give the loser time to exit(0) after losing the lock race.
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     const exitedCodes = [procA.exitCode, procB.exitCode];
@@ -51,7 +50,6 @@ describe("daemon single-instance locking (R7)", () => {
       if (code !== null) expect(code).toBe(0);
     }
 
-    // Both socket clients still work against whichever daemon won.
     for (const clientId of ["client-1", "client-2"]) {
       const client = await connectRawClient(socketPath);
       try {

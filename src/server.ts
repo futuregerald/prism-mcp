@@ -98,8 +98,8 @@ import { getSettingSync, initConfigStorage } from "./storage/configStorage.js";
 import { getTracer, initTelemetry } from "./utils/telemetry.js";
 import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/api";
 
-// ─── Shared Daemon Phase 2 ──────────────────────────────────────
 import { startStorage, isStorageReady, getStorageReadyPromise } from "./storageReady.js";
+import { startJobWorker } from "./jobs/worker.js";
 import { registerServer, broadcastLog } from "./connectionRegistry.js";
 import { runWithRequestContext, requestContext } from "./utils/requestContext.js";
 import { MUTATING_TOOLS } from "./tools/mutatingTools.js";
@@ -317,9 +317,6 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
 // will re-subscribe on reconnect (per MCP spec behavior).
 const activeSubscriptions = new Set<string>();
 
-// ─── Shared Daemon Phase 2: In-Flight Call Tracking ──────────
-// Tracked so the daemon's graceful shutdown (SIGTERM/SIGINT/SIGHUP) can
-// drain active CallTool invocations before closing the DBs (R6).
 let inFlightCallCount = 0;
 
 export function getInFlightCount(): number {
@@ -765,8 +762,6 @@ export function createServer() {
       },
     });
 
-    // Tracked so the daemon's graceful shutdown can drain in-flight calls
-    // before closing the DBs (R6). Decremented in the finally below.
     inFlightCallCount++;
 
     // context.with() sets the root span as the active span for the duration
@@ -781,13 +776,6 @@ export function createServer() {
 
         let result: any;
 
-        // ─── Shared Daemon Phase 2: Idempotent Retries ─────────────────
-        // A retried tools/call carrying the same _meta["prism/idempotencyKey"]
-        // for a MUTATING_TOOLS entry returns the cached response instead of
-        // re-running the handler. Everything else (reads, unkeyed calls) is
-        // unchanged. The handler runs inside runWithRequestContext so a
-        // nested call to requestContext() (e.g. session_save_ledger's M3
-        // deterministic ledger id) sees the key too.
         const metaIdempotencyKey = (request.params as { _meta?: Record<string, unknown> })._meta?.["prism/idempotencyKey"];
         const idempotencyKey = typeof metaIdempotencyKey === "string" && metaIdempotencyKey.length > 0
           ? metaIdempotencyKey
@@ -1190,8 +1178,6 @@ export async function startServer() {
   // stdio handshake. Supabase REST initialization can take 500ms–5s; blocking
   // on it before server.connect() was the root cause of the 1m 56s CLI delay.
   // By the time the first real tool/resource call arrives, the singleton is warm.
-  // startStorage() is intentionally NOT awaited here — same fire-and-forget
-  // behavior as before the refactor into src/storageReady.ts.
   if (SESSION_MEMORY_ENABLED) {
     void startStorage();
 
@@ -1301,19 +1287,6 @@ export async function startServer() {
   }, 10000);
 }
 
-/**
- * Starts every background subsystem that doesn't belong to a single MCP
- * connection: SyncBus (Telepathy), the Mind Palace dashboard, the Hivemind
- * watchdog, the maintenance scheduler, the Web Scholar scheduler, the Dark
- * Factory runner, and the TurboQuant warm-up.
- *
- * Extracted from startServer() (Phase 2, plan R3) so the daemon can call it
- * exactly once for the whole process instead of once per client connection.
- * stdio mode still calls it from startServer() so behavior is unchanged —
- * the only functional difference is that SyncBus notifications now go
- * through connectionRegistry.broadcastLog() instead of a captured `server`
- * reference, since a daemon has many live servers, not one.
- */
 export function startBackgroundServices(): void {
   // ─── v2.0 Step 6: Initialize SyncBus (Telepathy) ───
   // Fire-and-forget — SyncBus is non-critical for startup.
@@ -1326,7 +1299,6 @@ export function startBackgroundServices(): void {
         await syncBus.startListening();
 
         syncBus.on("update", (event: SyncEvent) => {
-          // Send an MCP logging notification to every live connection.
           broadcastLog({
             level: "info",
             data: `[Prism Telepathy] \u{1F9E0} Another agent just updated the memory for ` +
@@ -1405,6 +1377,14 @@ export function startBackgroundServices(): void {
       startDarkFactoryRunner();
     }).catch(err => {
       console.error(`[DarkFactory] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  if (SESSION_MEMORY_ENABLED) {
+    getStorageReadyPromise()?.then(() => {
+      return startJobWorker();
+    }).catch(err => {
+      console.error(`[JobWorker] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 

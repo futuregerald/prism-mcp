@@ -1,9 +1,3 @@
-/**
- * The daemon's real entry point — everything that daemon.ts deliberately
- * avoids importing until after the lock/socket probe has decided this
- * process should keep running.
- */
-
 import * as fs from "node:fs";
 import * as net from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -27,15 +21,20 @@ interface HelloResult {
   clientId?: string;
 }
 
-/**
- * Reads the first '\n'-terminated line from a freshly-accepted socket. If it
- * parses as a `{"prism_hello": {...}}` envelope, returns its cwd/clientId and
- * pushes any bytes after the newline back onto the socket (R1) *before* the
- * transport is created, so a hello + initialize + tools/list sent in one
- * `write()` all still get answered. If the first line isn't a hello, the
- * whole thing (unparsed) is pushed back and treated as plain MCP framing
- * with an empty request context.
- */
+function pauseSocketToProtectUnshiftedBytes(
+  socket: net.Socket,
+  onData: (chunk: Buffer) => void,
+  onError: (err: Error) => void
+): void {
+  socket.pause();
+  socket.off("data", onData);
+  socket.off("error", onError);
+}
+
+function resumeSocketAfterTransportWired(socket: net.Socket): void {
+  socket.resume();
+}
+
 function readHello(socket: net.Socket): Promise<HelloResult> {
   return new Promise((resolve, reject) => {
     let buffered = Buffer.alloc(0);
@@ -51,14 +50,7 @@ function readHello(socket: net.Socket): Promise<HelloResult> {
       const newlineIdx = buffered.indexOf(0x0a);
       if (newlineIdx === -1) return;
 
-      // Pause BEFORE removing the listener: a flowing Readable with zero
-      // 'data' listeners keeps draining its internal buffer into the void,
-      // silently discarding whatever we unshift() below. Pausing first
-      // holds the unshifted bytes in the buffer until handleConnection
-      // explicitly resumes the socket once the real transport is wired up.
-      socket.pause();
-      socket.off("data", onData);
-      socket.off("error", onError);
+      pauseSocketToProtectUnshiftedBytes(socket, onData, onError);
 
       const firstLine = buffered.subarray(0, newlineIdx).toString("utf8");
       const rest = buffered.subarray(newlineIdx + 1);
@@ -73,11 +65,8 @@ function readHello(socket: net.Socket): Promise<HelloResult> {
           return;
         }
       } catch {
-        // Not JSON — falls through to the "not a hello" branch below.
       }
 
-      // Not a hello line: push the whole thing back verbatim (newline
-      // included) so the MCP transport sees the exact bytes the client sent.
       socket.unshift(buffered);
       resolve({});
     };
@@ -102,8 +91,6 @@ async function handleConnection(socket: net.Socket): Promise<void> {
 
   await server.connect(transport);
 
-  // Protocol.connect() REPLACES transport.onmessage, so we must wrap it
-  // AFTER connect() returns — wrapping before would just get overwritten.
   const connected = transport.onmessage;
   transport.onmessage = (message: JSONRPCMessage) => {
     runWithRequestContext({ cwd: hello.cwd, clientId: hello.clientId }, () => {
@@ -111,11 +98,7 @@ async function handleConnection(socket: net.Socket): Promise<void> {
     });
   };
 
-  // readHello() paused the socket to protect the unshifted bytes (see its
-  // comment). transport.start() (inside connect(), above) added its own
-  // 'data' listener but never un-paused the socket, so we must resume it
-  // ourselves or the transport never sees another byte.
-  socket.resume();
+  resumeSocketAfterTransportWired(socket);
 
   registerServer(server);
 

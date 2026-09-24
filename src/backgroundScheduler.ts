@@ -418,9 +418,6 @@ export async function runSchedulerSweep(
 
   const storage = await getStorage();
 
-  // ─── Shared Daemon Phase 2: Idempotent Request Log Prune ────────────
-  // Best-effort, not tracked in SchedulerSweepResult — this is spike-only
-  // housekeeping for the daemon's idempotency cache, not a user-facing task.
   storage.pruneRequestLog(24 * 60 * 60 * 1000).catch(err => {
     debugLog(`[Scheduler] prism_request_log prune failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   });

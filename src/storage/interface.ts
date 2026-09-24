@@ -274,6 +274,16 @@ export interface HealthStats {
   totalCrdtMerges: number;
 }
 
+export interface PrismJob {
+  id: string;
+  kind: string;
+  payload: string;
+  attempts: number;
+  run_after: number;
+  last_error: string | null;
+  created_at: number;
+}
+
 // ─── Storage Backend Interface ────────────────────────────────
 
 /**
@@ -633,26 +643,19 @@ export interface StorageBackend {
 
   pruneZeroSdmState(): Promise<{ pruned: string[] }>;
 
-  // ─── Shared Daemon Phase 2: Idempotent Request Log ───────────
-
-  /**
-   * Look up a previously-recorded tool response for an idempotency key.
-   * Returns null if no matching row exists (first attempt for that key).
-   */
   getRequestLog(key: string): Promise<string | null>;
 
-  /**
-   * Record a tool response under an idempotency key so a retried call
-   * with the same key returns the same response instead of re-running
-   * the handler.
-   */
   putRequestLog(key: string, responseJson: string): Promise<void>;
 
-  /**
-   * Delete request-log rows older than `olderThanMs`. Called by the
-   * background scheduler on a 24h cadence.
-   */
   pruneRequestLog(olderThanMs: number): Promise<void>;
+
+  enqueueJob(id: string, kind: string, payload: string): Promise<void>;
+
+  claimNextJob(nowMs: number, leaseMs: number): Promise<PrismJob | null>;
+
+  completeJob(id: string): Promise<void>;
+
+  failJob(id: string, error: string, retryAtMs: number): Promise<void>;
 
   /**
    * Fetch all compressed embeddings for a project to enable fast JS-space Hamming scanning.
