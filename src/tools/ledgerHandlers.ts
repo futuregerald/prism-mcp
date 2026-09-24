@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import { randomUUID, createHash } from "node:crypto";
-import { requestContext } from "../utils/requestContext.js";
+import { requestContext, clientWorkingDirectory } from "../utils/requestContext.js";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
@@ -1207,8 +1207,14 @@ export async function sessionSaveImageHandler(args: unknown) {
   const { project, file_path, description } = args;
 
   // Resolve path (supports relative paths)
-  const baseCwd = requestContext()?.cwd ?? process.cwd();
-  const resolvedPath = nodePath.isAbsolute(file_path) ? file_path : nodePath.resolve(baseCwd, file_path);
+  const baseCwd = clientWorkingDirectory();
+  if (!nodePath.isAbsolute(file_path) && !baseCwd) {
+    return {
+      content: [{ type: "text", text: `Error: "${file_path}" is a relative path, but this session has no working directory. Pass an absolute path.` }],
+      isError: true,
+    };
+  }
+  const resolvedPath = nodePath.isAbsolute(file_path) ? file_path : nodePath.resolve(baseCwd!, file_path);
   if (!fs.existsSync(resolvedPath)) {
     return {
       content: [{ type: "text", text: `Error: File not found at "${resolvedPath}".` }],
@@ -1554,8 +1560,14 @@ export async function sessionExportMemoryHandler(args: unknown) {
 
   const { format = "json" } = args;
   const requestedProject = (args as { project?: string }).project;
-  const baseCwd = requestContext()?.cwd ?? process.cwd();
-  const output_dir = isAbsolute(args.output_dir) ? args.output_dir : join(baseCwd, args.output_dir);
+  const baseCwd = clientWorkingDirectory();
+  if (!isAbsolute(args.output_dir) && !baseCwd) {
+    return {
+      content: [{ type: "text", text: `Error: output_dir "${args.output_dir}" is a relative path, but this session has no working directory. Pass an absolute path.` }],
+      isError: true,
+    };
+  }
+  const output_dir = isAbsolute(args.output_dir) ? args.output_dir : join(baseCwd!, args.output_dir);
 
   // Validate output directory
   if (!existsSync(output_dir)) {

@@ -7,7 +7,7 @@ export interface ShimAction {
 
 export interface ShimSessionOptions {
   clientId: string;
-  cwd: string;
+  cwd?: string;
   mutatingTools: readonly string[];
   requestTimeoutMs: number;
   configFingerprint?: string;
@@ -40,7 +40,7 @@ function tryParseJson(line: string): any {
 
 export class ShimSession {
   private readonly clientId: string;
-  private readonly cwd: string;
+  private readonly cwd: string | undefined;
   private readonly mutatingTools: Set<string>;
   private readonly requestTimeoutMs: number;
   private readonly configFingerprint?: string;

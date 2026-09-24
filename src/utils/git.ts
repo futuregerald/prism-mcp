@@ -20,10 +20,11 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
+
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { isAbsolute } from "path";
-import { requestContext } from "./requestContext.js";
+import { clientWorkingDirectory } from "./requestContext.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,8 +34,8 @@ export interface GitState {
   commitSha: string | null;
 }
 
-function resolveProjectPath(projectPath: string): string {
-  return typeof projectPath === "string" && isAbsolute(projectPath) ? projectPath : process.cwd();
+function resolveProjectPath(projectPath: string | undefined): string | undefined {
+  return typeof projectPath === "string" && isAbsolute(projectPath) ? projectPath : undefined;
 }
 
 /**
@@ -42,9 +43,10 @@ function resolveProjectPath(projectPath: string): string {
  * Returns { isRepo: false } gracefully if not a Git repo.
  */
 export async function getCurrentGitState(
-  projectPath: string = requestContext()?.cwd ?? process.cwd()
+  projectPath: string | undefined = clientWorkingDirectory()
 ): Promise<GitState> {
   const cwd = resolveProjectPath(projectPath);
+  if (!cwd) return { isRepo: false, branch: null, commitSha: null };
   try {
     const { stdout: branchOut } = await execFileAsync(
       "git",
@@ -74,7 +76,7 @@ export async function getCurrentGitState(
  */
 export async function getGitDrift(
   oldSha: string,
-  projectPath: string = requestContext()?.cwd ?? process.cwd()
+  projectPath: string | undefined = clientWorkingDirectory()
 ): Promise<string | null> {
   // SECURITY: Validate SHA format before passing to git.
   // Without this, a corrupted DB entry like "; rm -rf /" would be
@@ -84,6 +86,7 @@ export async function getGitDrift(
   }
 
   const cwd = resolveProjectPath(projectPath);
+  if (!cwd) return null;
 
   try {
     const { stdout } = await execFileAsync(
