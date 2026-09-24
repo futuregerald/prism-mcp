@@ -633,6 +633,27 @@ export interface StorageBackend {
 
   pruneZeroSdmState(): Promise<{ pruned: string[] }>;
 
+  // ─── Shared Daemon Phase 2: Idempotent Request Log ───────────
+
+  /**
+   * Look up a previously-recorded tool response for an idempotency key.
+   * Returns null if no matching row exists (first attempt for that key).
+   */
+  getRequestLog(key: string): Promise<string | null>;
+
+  /**
+   * Record a tool response under an idempotency key so a retried call
+   * with the same key returns the same response instead of re-running
+   * the handler.
+   */
+  putRequestLog(key: string, responseJson: string): Promise<void>;
+
+  /**
+   * Delete request-log rows older than `olderThanMs`. Called by the
+   * background scheduler on a 24h cadence.
+   */
+  pruneRequestLog(olderThanMs: number): Promise<void>;
+
   /**
    * Fetch all compressed embeddings for a project to enable fast JS-space Hamming scanning.
    * Returns id, summary, and the base64 encoded embedding_compressed BLOB.

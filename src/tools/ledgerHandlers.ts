@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { requestContext } from "../utils/requestContext.js";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
@@ -130,9 +131,34 @@ const MEMORY_BOUNDARY_SUFFIX = '\n</prism_memory>';
  * After saving, generates an embedding vector for the entry via fire-and-forget.
  */
 import { computeEffectiveImportance, recordMemoryAccess } from "../utils/cognitiveMemory.js";
+/**
+ * Derives a deterministic, RFC4122 v4-shaped UUID from an idempotency key.
+ * A retried session_save_ledger call with the same key produces the same
+ * id, so a crash between the ledger INSERT and the daemon's response-log
+ * write still can't double-apply the save: the retry's INSERT hits the
+ * ledger's PRIMARY KEY and is treated as "already saved" (see M3).
+ */
+function deriveIdempotentLedgerId(idempotencyKey: string): string {
+  const hex = createHash("sha256").update(`ledger:${idempotencyKey}`).digest("hex").slice(0, 32);
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    "4" + hex.slice(13, 16),
+    ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20),
+    hex.slice(20, 32),
+  ].join("-");
+}
+
 export async function sessionSaveLedgerHandler(args: unknown) {
   if (!isSessionSaveLedgerArgs(args)) {
     throw new Error("Invalid arguments for session_save_ledger");
+  }
+
+  // TEST-ONLY hook (spike): lets the daemon graceful-shutdown test hold a
+  // save in flight long enough to send SIGTERM before it completes.
+  const testDelayMs = parseInt(process.env.PRISM_TEST_SAVE_DELAY_MS || "0", 10);
+  if (testDelayMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, testDelayMs));
   }
 
   // SECURITY: Sanitize all text fields to prevent stored prompt injection
@@ -171,20 +197,37 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 
   // Save via storage backend
   const effectiveRole = role || await getSetting("default_role", "global");
-  const result = await storage.saveLedger({
-    project,
-    conversation_id,
-    summary,
-    user_id: PRISM_USER_ID,
-    todos: todos || [],
-    files_changed: files_changed || [],
-    decisions: decisions || [],
-    keywords,
-    role: effectiveRole,  // v3.0: Hivemind role scoping (dashboard fallback)
-  });
+  const idempotencyKey = requestContext()?.idempotencyKey;
+  const idempotentId = idempotencyKey ? deriveIdempotentLedgerId(idempotencyKey) : undefined;
+
+  let result: unknown;
+  let alreadySaved = false;
+  try {
+    result = await storage.saveLedger({
+      ...(idempotentId ? { id: idempotentId } : {}),
+      project,
+      conversation_id,
+      summary,
+      user_id: PRISM_USER_ID,
+      todos: todos || [],
+      files_changed: files_changed || [],
+      decisions: decisions || [],
+      keywords,
+      role: effectiveRole,  // v3.0: Hivemind role scoping (dashboard fallback)
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (idempotentId && (msg.includes("UNIQUE") || msg.includes("constraint"))) {
+      debugLog(`[session_save_ledger] Idempotent retry — ledger row ${idempotentId} already exists, treating as saved`);
+      alreadySaved = true;
+      result = [{ id: idempotentId, project, created_at: new Date().toISOString() }];
+    } else {
+      throw err;
+    }
+  }
 
   // ─── Fire-and-forget embedding generation ───
-  if (result) {
+  if (result && !alreadySaved) {
     const embeddingText = [summary, ...(decisions || [])].join("\n");
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
@@ -226,7 +269,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   // Creates temporal (conversation chain) and keyword overlap (related_to)
   // graph edges. Wrapped in setImmediate + try/catch so graph failures
   // NEVER affect the primary MCP response path.
-  if (result) {
+  if (result && !alreadySaved) {
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const autoLinkEntryId = (savedEntry as any)?.id;
     if (autoLinkEntryId) {

@@ -154,6 +154,7 @@ export class SparseDistributedMemory {
         }
       }
     }
+    this._hasWrites = true;
   }
 
   /**

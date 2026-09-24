@@ -98,6 +98,12 @@ import { getSettingSync, initConfigStorage } from "./storage/configStorage.js";
 import { getTracer, initTelemetry } from "./utils/telemetry.js";
 import { context as otelContext, trace, SpanStatusCode } from "@opentelemetry/api";
 
+// ─── Shared Daemon Phase 2 ──────────────────────────────────────
+import { startStorage, isStorageReady, getStorageReadyPromise } from "./storageReady.js";
+import { registerServer, broadcastLog } from "./connectionRegistry.js";
+import { runWithRequestContext, requestContext } from "./utils/requestContext.js";
+import { MUTATING_TOOLS } from "./tools/mutatingTools.js";
+
 // ─── Import Tool Definitions (schemas) and Handlers (implementations) ─────
 
 import {
@@ -311,11 +317,14 @@ function buildSessionMemoryTools(autoloadList: string[]): Tool[] {
 // will re-subscribe on reconnect (per MCP spec behavior).
 const activeSubscriptions = new Set<string>();
 
-// Module-level promise for the async storage pre-warm fired in startServer().
-// Resource handlers check storageIsReady (synchronous) instead of awaiting
-// the promise, so they never block the MCP stdio pipe during startup.
-let storageReady: Promise<void> | null = null;
-let storageIsReady = false;
+// ─── Shared Daemon Phase 2: In-Flight Call Tracking ──────────
+// Tracked so the daemon's graceful shutdown (SIGTERM/SIGINT/SIGHUP) can
+// drain active CallTool invocations before closing the DBs (R6).
+let inFlightCallCount = 0;
+
+export function getInFlightCount(): number {
+  return inFlightCallCount;
+}
 
 // ─── v5.2.1: Deferred Auto-Push Tracking ─────────────────────
 // Tracks whether any client has already called session_load_context.
@@ -494,7 +503,7 @@ export function createServer() {
 
       // Non-blocking: if storage isn't warm yet, return a fallback message
       // instead of blocking the MCP stdio pipe during Supabase init.
-      if (!storageIsReady) {
+      if (!isStorageReady()) {
         const project = promptArgs?.project || "default";
         return {
           messages: [{
@@ -589,7 +598,7 @@ export function createServer() {
       // Non-blocking: if storage isn't warm yet, return empty list instantly
       // so the client UI isn't blocked during Supabase init (can take 1m+).
       // Resources will appear on the next ListResources call once warm.
-      if (!storageIsReady) {
+      if (!isStorageReady()) {
         return { resources: [] };
       }
       try {
@@ -624,7 +633,7 @@ export function createServer() {
 
       // Non-blocking: if storage isn't warm yet, return a friendly fallback
       // instead of blocking the client UI for 1m+ during Supabase init.
-      if (!storageIsReady) {
+      if (!isStorageReady()) {
         return {
           contents: [{
             uri,
@@ -756,6 +765,10 @@ export function createServer() {
       },
     });
 
+    // Tracked so the daemon's graceful shutdown can drain in-flight calls
+    // before closing the DBs (R6). Decremented in the finally below.
+    inFlightCallCount++;
+
     // context.with() sets the root span as the active span for the duration
     // of this async operation. AsyncLocalStorage ensures the context flows
     // through await chains — including fire-and-forget workers launched
@@ -768,6 +781,20 @@ export function createServer() {
 
         let result: any;
 
+        // ─── Shared Daemon Phase 2: Idempotent Retries ─────────────────
+        // A retried tools/call carrying the same _meta["prism/idempotencyKey"]
+        // for a MUTATING_TOOLS entry returns the cached response instead of
+        // re-running the handler. Everything else (reads, unkeyed calls) is
+        // unchanged. The handler runs inside runWithRequestContext so a
+        // nested call to requestContext() (e.g. session_save_ledger's M3
+        // deterministic ledger id) sees the key too.
+        const metaIdempotencyKey = (request.params as { _meta?: Record<string, unknown> })._meta?.["prism/idempotencyKey"];
+        const idempotencyKey = typeof metaIdempotencyKey === "string" && metaIdempotencyKey.length > 0
+          ? metaIdempotencyKey
+          : undefined;
+        const eligibleForIdempotency = idempotencyKey !== undefined && MUTATING_TOOLS.includes(name);
+
+        const runToolSwitch = async (): Promise<void> => {
         switch (name) {
           // ── Search & Analysis Tools (always available) ──
 
@@ -971,6 +998,21 @@ export function createServer() {
               isError: true,
             };
         }
+        };
+
+        if (eligibleForIdempotency) {
+          const storage = await getStorage();
+          const cached = await storage.getRequestLog(idempotencyKey!);
+          if (cached !== null) {
+            result = JSON.parse(cached);
+          } else {
+            const baseCtx = requestContext() ?? {};
+            await runWithRequestContext({ ...baseCtx, idempotencyKey }, runToolSwitch);
+            await storage.putRequestLog(idempotencyKey!, JSON.stringify(result));
+          }
+        } else {
+          await runToolSwitch();
+        }
 
         rootSpan.setStatus({ code: SpanStatusCode.OK });
 
@@ -1028,6 +1070,7 @@ export function createServer() {
         // Always end the root span — even on error — to avoid span leaks
         // in the BatchSpanProcessor's in-memory queue.
         rootSpan.end();
+        inFlightCallCount--;
       }
     });
   });
@@ -1132,6 +1175,7 @@ export async function startServer() {
   initTelemetry();
 
   const server = createServer();
+  registerServer(server);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
@@ -1146,19 +1190,10 @@ export async function startServer() {
   // stdio handshake. Supabase REST initialization can take 500ms–5s; blocking
   // on it before server.connect() was the root cause of the 1m 56s CLI delay.
   // By the time the first real tool/resource call arrives, the singleton is warm.
+  // startStorage() is intentionally NOT awaited here — same fire-and-forget
+  // behavior as before the refactor into src/storageReady.ts.
   if (SESSION_MEMORY_ENABLED) {
-    const STORAGE_TIMEOUT_MS = 10_000;
-    storageReady = Promise.race([
-      getStorage().then(() => { storageIsReady = true; }),
-      new Promise<void>(resolve => setTimeout(() => {
-        if (!storageIsReady) {
-          console.error(`[Prism] Storage pre-warm timed out after ${STORAGE_TIMEOUT_MS}ms (non-fatal)`);
-        }
-        resolve();
-      }, STORAGE_TIMEOUT_MS)),
-    ]).catch(err => {
-      console.error(`[Prism] Storage pre-warm failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    });
+    void startStorage();
 
     // ─── v4.1: Auto-Load via dynamic tool descriptions ──────────
     // The session_load_context tool description is dynamically modified
@@ -1183,7 +1218,7 @@ export async function startServer() {
 
     if (pushAutoloadList.length > 0) {
       // Wait for storage, then schedule the deferred push
-      storageReady?.then(async () => {
+      getStorageReadyPromise()?.then(async () => {
         // Wait for the delay period to give the model a chance to call the tool
         await new Promise(r => setTimeout(r, AUTOLOAD_PUSH_DELAY_MS));
 
@@ -1256,6 +1291,30 @@ export async function startServer() {
     }
   }
 
+  startBackgroundServices();
+
+  // Keep the process alive — without this, Node.js would exit
+  // because there are no active event loop handles after the
+  // synchronous setup completes.
+  setInterval(() => {
+    // Heartbeat to keep the process running
+  }, 10000);
+}
+
+/**
+ * Starts every background subsystem that doesn't belong to a single MCP
+ * connection: SyncBus (Telepathy), the Mind Palace dashboard, the Hivemind
+ * watchdog, the maintenance scheduler, the Web Scholar scheduler, the Dark
+ * Factory runner, and the TurboQuant warm-up.
+ *
+ * Extracted from startServer() (Phase 2, plan R3) so the daemon can call it
+ * exactly once for the whole process instead of once per client connection.
+ * stdio mode still calls it from startServer() so behavior is unchanged —
+ * the only functional difference is that SyncBus notifications now go
+ * through connectionRegistry.broadcastLog() instead of a captured `server`
+ * reference, since a daemon has many live servers, not one.
+ */
+export function startBackgroundServices(): void {
   // ─── v2.0 Step 6: Initialize SyncBus (Telepathy) ───
   // Fire-and-forget — SyncBus is non-critical for startup.
   // Awaiting getSyncBus() + startListening() could block the event loop
@@ -1267,17 +1326,13 @@ export async function startServer() {
         await syncBus.startListening();
 
         syncBus.on("update", (event: SyncEvent) => {
-          // Send an MCP logging notification to the IDE
-          try {
-            server.sendLoggingMessage({
-              level: "info",
-              data: `[Prism Telepathy] \u{1F9E0} Another agent just updated the memory for ` +
-                `'${event.project}' to version ${event.version}. ` +
-                `You may want to run session_load_context to sync up.`,
-            });
-          } catch (err) {
-            console.error(`[Telepathy] Failed to send notification: ${err instanceof Error ? err.message : String(err)}`);
-          }
+          // Send an MCP logging notification to every live connection.
+          broadcastLog({
+            level: "info",
+            data: `[Prism Telepathy] \u{1F9E0} Another agent just updated the memory for ` +
+              `'${event.project}' to version ${event.version}. ` +
+              `You may want to run session_load_context to sync up.`,
+          });
         });
 
       } catch (err) {
@@ -1303,7 +1358,7 @@ export async function startServer() {
   // Runs every WATCHDOG_INTERVAL_MS (default 60s) to detect
   // frozen agents, infinite loops, and task overruns.
   if (PRISM_ENABLE_HIVEMIND && SESSION_MEMORY_ENABLED) {
-    storageReady?.then(() => {
+    getStorageReadyPromise()?.then(() => {
       startWatchdog({
         intervalMs: WATCHDOG_INTERVAL_MS,
         staleThresholdMin: WATCHDOG_STALE_MIN,
@@ -1321,7 +1376,7 @@ export async function startServer() {
   // compaction, and deep purge. Runs every PRISM_SCHEDULER_INTERVAL_MS
   // (default: 12 hours). Independent from the Watchdog (60s cadence).
   if (PRISM_SCHEDULER_ENABLED && SESSION_MEMORY_ENABLED) {
-    storageReady?.then(() => {
+    getStorageReadyPromise()?.then(() => {
       startScheduler({
         intervalMs: PRISM_SCHEDULER_INTERVAL_MS,
       });
@@ -1334,7 +1389,7 @@ export async function startServer() {
   // Background LLM research pipeline. Independent from the
   // maintenance scheduler — has its own interval and enable flag.
   if (PRISM_SCHOLAR_ENABLED && SESSION_MEMORY_ENABLED) {
-    storageReady?.then(() => {
+    getStorageReadyPromise()?.then(() => {
       startScholarScheduler();
     }).catch(err => {
       console.error(`[WebScholar] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -1346,7 +1401,7 @@ export async function startServer() {
   // pipelines and advances them through PLAN → EXECUTE → VERIFY
   // cycles. Non-blocking — uses setInterval to yield between ticks.
   if (PRISM_DARK_FACTORY_ENABLED && SESSION_MEMORY_ENABLED) {
-    storageReady?.then(() => {
+    getStorageReadyPromise()?.then(() => {
       startDarkFactoryRunner();
     }).catch(err => {
       console.error(`[DarkFactory] Startup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -1371,13 +1426,6 @@ export async function startServer() {
       });
     } catch { /* warmup is a best-effort optimization */ }
   });
-
-  // Keep the process alive — without this, Node.js would exit
-  // because there are no active event loop handles after the
-  // synchronous setup completes.
-  setInterval(() => {
-    // Heartbeat to keep the process running
-  }, 10000);
 }
 
 // Only auto-start when this module is executed directly (not imported by Smithery scanner).

@@ -160,6 +160,63 @@ export function acquireLock() {
 /**
  * Registers handlers to close SQLite file handles cleanly when the server stops.
  */
+/**
+ * Shared resource-teardown steps used by both stdio shutdown (below) and
+ * the daemon's own graceful shutdown (src/daemon/main.ts), which has
+ * different pre/post steps (draining in-flight calls, removing the daemon
+ * lock/socket instead of the PID file) but the same DB/telemetry/SDM
+ * cleanup in the middle.
+ */
+export async function performResourceCleanup(logFn: (msg: string) => void = log): Promise<void> {
+  // 0. Stop the Dark Factory background runner first (prevents new DB writes)
+  try {
+    const { stopDarkFactoryRunner } = await import("./darkfactory/runner.js");
+    stopDarkFactoryRunner();
+  } catch {
+    // Runner may not be initialized — safe to ignore
+  }
+
+  // 0.5 Await pending background tasks (max 5s timeout)
+  await BackgroundTaskRegistry.awaitAll(5000);
+
+  // 0.5. Flush OTel span buffer FIRST — before any DBs are closed.
+  //    BatchSpanProcessor holds spans in memory (up to 5s). If we close
+  //    DBs first, spans that reference DB operations lose their context.
+  //    shutdownTelemetry() is a no-op when otel_enabled=false.
+  await shutdownTelemetry();
+
+  const storage = await getStorage();
+
+  // 1. Flush pending SDM matrices to disk
+  try {
+    const { getAllActiveSdmProjects, getSdmEngine } = await import("./sdm/sdmEngine.js");
+    const sdmProjects = getAllActiveSdmProjects();
+    if (sdmProjects.length > 0) {
+      logFn(`Flushing SDM state for ${sdmProjects.length} active projects...`);
+      for (const project of sdmProjects) {
+        try {
+          const sdm = getSdmEngine(project);
+          if (!sdm.hasWrites) continue;
+          const state = sdm.exportState();
+          await storage.saveSdmState(project, state);
+        } catch (err) {
+          logFn(`Failed to flush SDM state for "${project}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+  } catch (err) {
+    logFn(`Failed to load SDM engine during shutdown: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 2. Close system settings DB
+  closeConfigStorage();
+
+  // 3. Close main ledger DB
+  if (storage && typeof storage.close === "function") {
+    await storage.close();
+  }
+}
+
 export function registerShutdownHandlers() {
   let shuttingDown = false;
 
@@ -169,55 +226,9 @@ export function registerShutdownHandlers() {
     log(`Shutting down gracefully (${reason})...`);
 
     try {
-      // 0. Stop the Dark Factory background runner first (prevents new DB writes)
-      try {
-        const { stopDarkFactoryRunner } = await import("./darkfactory/runner.js");
-        stopDarkFactoryRunner();
-      } catch {
-        // Runner may not be initialized — safe to ignore
-      }
+      await performResourceCleanup(log);
 
-      // 0.5 Await pending background tasks (max 5s timeout)
-      await BackgroundTaskRegistry.awaitAll(5000);
-
-      // 0.5. Flush OTel span buffer FIRST — before any DBs are closed.
-      //    BatchSpanProcessor holds spans in memory (up to 5s). If we close
-      //    DBs first, spans that reference DB operations lose their context.
-      //    shutdownTelemetry() is a no-op when otel_enabled=false.
-      await shutdownTelemetry();
-
-      const storage = await getStorage();
-
-      // 1. Flush pending SDM matrices to disk
-      try {
-        const { getAllActiveSdmProjects, getSdmEngine } = await import("./sdm/sdmEngine.js");
-        const sdmProjects = getAllActiveSdmProjects();
-        if (sdmProjects.length > 0) {
-          log(`Flushing SDM state for ${sdmProjects.length} active projects...`);
-          for (const project of sdmProjects) {
-            try {
-              const sdm = getSdmEngine(project);
-              if (!sdm.hasWrites) continue;
-              const state = sdm.exportState();
-              await storage.saveSdmState(project, state);
-            } catch (err) {
-              log(`Failed to flush SDM state for "${project}": ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-        }
-      } catch (err) {
-        log(`Failed to load SDM engine during shutdown: ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      // 2. Close system settings DB
-      closeConfigStorage();
-
-      // 3. Close main ledger DB
-      if (storage && typeof storage.close === "function") {
-        await storage.close();
-      }
-
-      // 3. Remove PID lockfile (only if WE own it)
+      // Remove PID lockfile (only if WE own it)
       const pidFile = getPidFile();
       if (fs.existsSync(pidFile)) {
         try {

@@ -800,6 +800,15 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
+    // ─── Shared Daemon Phase 2 Migration: Idempotent Request Log ────────
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS prism_request_log (
+        key TEXT PRIMARY KEY,
+        response TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `);
+
     // ─── v6.1 Migration: Integrity Check ──────────────────────
     //
     // REVIEWER NOTE: PRAGMA integrity_check scans the B-tree structure of
@@ -2846,6 +2855,34 @@ export class SqliteStorage implements StorageBackend {
     }
 
     return { pruned };
+  }
+
+  // ─── Shared Daemon Phase 2: Idempotent Request Log ────────────────────
+
+  async getRequestLog(key: string): Promise<string | null> {
+    const result = await this.db.execute({
+      sql: `SELECT response FROM prism_request_log WHERE key = ?`,
+      args: [key],
+    });
+    if (result.rows.length === 0) return null;
+    return result.rows[0].response as string;
+  }
+
+  async putRequestLog(key: string, responseJson: string): Promise<void> {
+    await this.db.execute({
+      sql: `INSERT INTO prism_request_log (key, response, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO NOTHING`,
+      args: [key, responseJson, Date.now()],
+    });
+  }
+
+  async pruneRequestLog(olderThanMs: number): Promise<void> {
+    const cutoff = Date.now() - olderThanMs;
+    await this.db.execute({
+      sql: `DELETE FROM prism_request_log WHERE created_at < ?`,
+      args: [cutoff],
+    });
   }
 
   // ─── v6.5: HDC State Machines & Cognitive Logic ───────────────────────

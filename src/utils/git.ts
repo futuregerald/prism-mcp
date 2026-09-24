@@ -23,6 +23,7 @@
  */
 
 import { execSync, execFileSync } from "child_process";
+import { requestContext } from "./requestContext.js";
 
 export interface GitState {
   isRepo: boolean;
@@ -35,7 +36,7 @@ export interface GitState {
  * Returns { isRepo: false } gracefully if not a Git repo.
  */
 export function getCurrentGitState(
-  projectPath: string = process.cwd()
+  projectPath: string = requestContext()?.cwd ?? process.cwd()
 ): GitState {
   try {
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
@@ -68,7 +69,7 @@ export function getCurrentGitState(
  */
 export function getGitDrift(
   oldSha: string,
-  projectPath: string = process.cwd()
+  projectPath: string = requestContext()?.cwd ?? process.cwd()
 ): string | null {
   // SECURITY: Validate SHA format before passing to git.
   // Without this, a corrupted DB entry like "; rm -rf /" would be

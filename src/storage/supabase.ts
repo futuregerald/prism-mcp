@@ -1062,6 +1062,22 @@ export class SupabaseStorage implements StorageBackend {
     return { pruned: [] };
   }
 
+  // ─── Shared Daemon Phase 2: Idempotent Request Log ───────────
+  // Out of scope for Supabase mode in this spike — the daemon is a local-only
+  // (SQLite) feature, so these are no-ops rather than a real implementation.
+
+  async getRequestLog(_key: string): Promise<string | null> {
+    return null;
+  }
+
+  async putRequestLog(_key: string, _responseJson: string): Promise<void> {
+    // no-op
+  }
+
+  async pruneRequestLog(_olderThanMs: number): Promise<void> {
+    // no-op
+  }
+
   // ─── HDC Dictionary (Concept Vectors) ───────────────────────────
   //
   // The hdc_dictionary table stores 768-word Uint32Array concept vectors
