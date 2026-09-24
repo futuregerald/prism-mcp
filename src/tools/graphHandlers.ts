@@ -105,7 +105,7 @@ import {
 import { HdcStateMachine } from "../sdm/stateMachine.js";
 import { ConceptDictionary } from "../sdm/conceptDictionary.js";
 import { PolicyGateway } from "../sdm/policyGateway.js";
-import { getSdmEngine } from "../sdm/sdmEngine.js";
+import { getSdmEngine, hasSdmEngine } from "../sdm/sdmEngine.js";
 import {
   PRISM_HDC_ENABLED,
   PRISM_HDC_EXPLAINABILITY_ENABLED,
@@ -338,6 +338,16 @@ export async function knowledgeForgetHandler(args: unknown) {
   } else {
     const result = await storage.deleteLedger(ledgerParams);
     ledgerCount = result.length;
+
+    for (const deleted of result) {
+      const id = (deleted as any)?.id;
+      if (!id) continue;
+      try {
+        await storage.deleteJob(`embed_ledger:${id}`);
+      } catch (cleanupErr) {
+        debugLog(`[knowledge_forget] Cleanup of job row for ${id} failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+      }
+    }
 
     if (clear_handoff && project) {
       await storage.deleteHandoff(project, PRISM_USER_ID);
@@ -954,8 +964,9 @@ export async function sessionIntuitiveRecallHandler(
     const { decodeSdmVector } = await import("../sdm/sdmDecoder.js");
 
     const queryVector = await getLLMProvider().generateEmbedding(args.query);
-    const sdmEngine = getSdmEngine(args.project);
-    const targetVector = sdmEngine.read(new Float32Array(queryVector));
+    const targetVector = hasSdmEngine(args.project)
+      ? getSdmEngine(args.project).read(new Float32Array(queryVector))
+      : new Float32Array(queryVector.length);
 
     const limit = args.limit ?? 3;
     const threshold = args.threshold ?? 0.55;

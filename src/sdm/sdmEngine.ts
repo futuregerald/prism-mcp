@@ -56,7 +56,13 @@ export class SparseDistributedMemory {
   public readonly addresses: Uint32Array[];
   // Hard Locations: Counters (M x 768 float32)
   public readonly counters: Float32Array[];
-  
+
+  private _hasWrites = false;
+
+  public get hasWrites(): boolean {
+    return this._hasWrites;
+  }
+
   constructor(seed: number = 42) {
     this.addresses = new Array(SDM_M);
     this.counters = new Array(SDM_M);
@@ -100,6 +106,7 @@ export class SparseDistributedMemory {
         c[j] += vector[j];
       }
     }
+    this._hasWrites = true;
   }
 
   public read(queryVector: Float32Array, k: number = 20): Float32Array {
@@ -147,6 +154,7 @@ export class SparseDistributedMemory {
         }
       }
     }
+    this._hasWrites = true;
   }
 
   /**
@@ -297,6 +305,13 @@ export class SparseDistributedMemory {
       // Subarray creates a fast view over the underlying buffer
       this.counters[i] = state.subarray(i * PRISM_DEFAULT_CONFIG.d, (i + 1) * PRISM_DEFAULT_CONFIG.d);
     }
+
+    for (let i = 0; i < state.length; i++) {
+      if (state[i] !== 0) {
+        this._hasWrites = true;
+        break;
+      }
+    }
   }
 }
 
@@ -328,4 +343,8 @@ export function getSdmEngine(projectId: string): SparseDistributedMemory {
 
 export function getAllActiveSdmProjects(): string[] {
   return Array.from(_sdmInstances.keys());
+}
+
+export function hasSdmEngine(projectId: string): boolean {
+  return _sdmInstances.has(projectId);
 }

@@ -1,10 +1,11 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import * as os from "node:os";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { requestContext } from "../utils/requestContext.js";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
+import { getPrismDataDir } from "../utils/dataDir.js";
 /**
  * Session Memory Handlers (v2.0 — StorageBackend Refactor)
  *
@@ -27,6 +28,7 @@ import { debugLog } from "../utils/logger.js";
 import { getStorage, activeStorageBackend } from "../storage/index.js";
 import { toKeywordArray } from "../utils/keywordExtractor.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
+import { kickJobWorker } from "../jobs/worker.js";
 import { getCurrentGitState, getGitDrift } from "../utils/git.js";
 import { getSetting, getAllSettings } from "../storage/configStorage.js";
 import { mergeHandoff, dbToHandoffSchema, sanitizeForMerge } from "../utils/crdtMerge.js";
@@ -130,9 +132,25 @@ const MEMORY_BOUNDARY_SUFFIX = '\n</prism_memory>';
  * After saving, generates an embedding vector for the entry via fire-and-forget.
  */
 import { computeEffectiveImportance, recordMemoryAccess } from "../utils/cognitiveMemory.js";
+function deriveIdempotentLedgerId(idempotencyKey: string): string {
+  const hex = createHash("sha256").update(`ledger:${idempotencyKey}`).digest("hex").slice(0, 32);
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    "4" + hex.slice(13, 16),
+    ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20),
+    hex.slice(20, 32),
+  ].join("-");
+}
+
 export async function sessionSaveLedgerHandler(args: unknown) {
   if (!isSessionSaveLedgerArgs(args)) {
     throw new Error("Invalid arguments for session_save_ledger");
+  }
+
+  const testDelayMs = process.env.NODE_ENV === "test" ? parseInt(process.env.PRISM_TEST_SAVE_DELAY_MS || "0", 10) : 0;
+  if (testDelayMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, testDelayMs));
   }
 
   // SECURITY: Sanitize all text fields to prevent stored prompt injection
@@ -171,54 +189,56 @@ export async function sessionSaveLedgerHandler(args: unknown) {
 
   // Save via storage backend
   const effectiveRole = role || await getSetting("default_role", "global");
-  const result = await storage.saveLedger({
-    project,
-    conversation_id,
-    summary,
-    user_id: PRISM_USER_ID,
-    todos: todos || [],
-    files_changed: files_changed || [],
-    decisions: decisions || [],
-    keywords,
-    role: effectiveRole,  // v3.0: Hivemind role scoping (dashboard fallback)
-  });
+  const idempotencyKey = requestContext()?.idempotencyKey;
+  const idempotentId = idempotencyKey ? deriveIdempotentLedgerId(idempotencyKey) : undefined;
 
-  // ─── Fire-and-forget embedding generation ───
-  if (result) {
-    const embeddingText = [summary, ...(decisions || [])].join("\n");
+  let result: unknown;
+  let alreadySaved = false;
+  try {
+    result = await storage.saveLedger({
+      ...(idempotentId ? { id: idempotentId } : {}),
+      project,
+      conversation_id,
+      summary,
+      user_id: PRISM_USER_ID,
+      todos: todos || [],
+      files_changed: files_changed || [],
+      decisions: decisions || [],
+      keywords,
+      role: effectiveRole,  // v3.0: Hivemind role scoping (dashboard fallback)
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (idempotentId && (msg.includes("UNIQUE") || msg.includes("constraint"))) {
+      const existing = await storage.getLedgerEntries({
+        id: `eq.${idempotentId}`,
+        user_id: `eq.${PRISM_USER_ID}`,
+        limit: "1",
+      });
+      if (existing.length > 0) {
+        debugLog(`[session_save_ledger] Idempotent retry — ledger row ${idempotentId} already exists, returning stored row`);
+        alreadySaved = true;
+        result = existing;
+      } else {
+        throw err;
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const afterSaveDelayMs = process.env.NODE_ENV === "test" ? parseInt(process.env.PRISM_TEST_AFTER_SAVE_DELAY_MS || "0", 10) : 0;
+  if (afterSaveDelayMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, afterSaveDelayMs));
+  }
+
+  if (result && !alreadySaved) {
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          // Build atomic patch — float32 + TurboQuant in ONE DB update
-          const patchData: Record<string, unknown> = {
-            embedding: JSON.stringify(embedding),
-          };
-
-          // TurboQuant: compress alongside float32 (non-fatal)
-          try {
-            const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
-            const compressor = getDefaultCompressor();
-            const compressed = compressor.compress(embedding);
-            const buf = serialize(compressed);
-
-            patchData.embedding_compressed = buf.toString("base64");
-            patchData.embedding_format = `turbo${compressor.bits}`;
-            patchData.embedding_turbo_radius = compressed.radius;
-            debugLog(`[session_save_ledger] TurboQuant compressed: ${buf.length} bytes (${(3072 / buf.length).toFixed(1)}× ratio)`);
-          } catch (turboErr: any) {
-            console.error(`[session_save_ledger] TurboQuant compression failed (non-fatal): ${turboErr.message}`);
-          }
-
-          // Single atomic DB update for all embedding data
-          await storage.patchLedger(entryId, patchData);
-          debugLog(`[session_save_ledger] Embedding saved for entry ${entryId}`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_ledger] Embedding generation failed (non-fatal): ${err.message}`);
-        });
+      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
+      kickJobWorker();
     }
   }
 
@@ -226,7 +246,7 @@ export async function sessionSaveLedgerHandler(args: unknown) {
   // Creates temporal (conversation chain) and keyword overlap (related_to)
   // graph edges. Wrapped in setImmediate + try/catch so graph failures
   // NEVER affect the primary MCP response path.
-  if (result) {
+  if (result && !alreadySaved) {
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const autoLinkEntryId = (savedEntry as any)?.id;
     if (autoLinkEntryId) {
@@ -331,7 +351,7 @@ export async function sessionSaveHandoffHandler(args: unknown, server?: Server) 
   }
 
   // Auto-capture Git state for Reality Drift Detection (v2.0 Step 5)
-  const gitState = getCurrentGitState();
+  const gitState = await getCurrentGitState();
   const metadata: Record<string, unknown> = {};
   if (gitState.isRepo) {
     metadata.git_branch = gitState.branch;
@@ -727,7 +747,7 @@ export async function sessionLoadContextHandler(args: unknown) {
       // When using Supabase as primary, local SQLite being stale is expected.
       // Only warn if local is NEWER (data loss risk). If local is older, that's
       // normal — cloud is authoritative.
-      const dbPath = nodePath.join(os.homedir(), ".prism-mcp", "data.db");
+      const dbPath = nodePath.join(getPrismDataDir(), "data.db");
       if (fs.existsSync(dbPath)) {
         let altClient: any = null;
         try {
@@ -764,7 +784,7 @@ export async function sessionLoadContextHandler(args: unknown) {
   const meta = (data as any)?.metadata;
 
   if (meta?.last_commit_sha) {
-    const currentGit = getCurrentGitState();
+    const currentGit = await getCurrentGitState();
 
     if (currentGit.isRepo) {
       if (meta.git_branch && currentGit.branch !== meta.git_branch) {
@@ -777,7 +797,7 @@ export async function sessionLoadContextHandler(args: unknown) {
         );
       } else if (currentGit.commitSha !== meta.last_commit_sha) {
         // Same branch, different commits — calculate drift
-        const changes = getGitDrift(meta.last_commit_sha as string);
+        const changes = await getGitDrift(meta.last_commit_sha as string);
         if (changes) {
           driftReport = `\n\n⚠️ **REALITY DRIFT DETECTED**\n` +
             `Since this memory was saved (commit ${(meta.last_commit_sha as string).substring(0, 8)}), ` +
@@ -955,11 +975,12 @@ export async function sessionLoadContextHandler(args: unknown) {
         const queryVector = await getLLMProvider().generateEmbedding(activeText);
 
         // Lazy-load to avoid blocking server boot
-        const { getSdmEngine } = await import("../sdm/sdmEngine.js");
+        const { getSdmEngine, hasSdmEngine } = await import("../sdm/sdmEngine.js");
         const { decodeSdmVector } = await import("../sdm/sdmDecoder.js");
 
-        const sdmEngine = getSdmEngine(project);
-        const targetVector = sdmEngine.read(new Float32Array(queryVector));
+        const targetVector = hasSdmEngine(project)
+          ? getSdmEngine(project).read(new Float32Array(queryVector))
+          : new Float32Array(queryVector.length);
 
         const topMatches = await decodeSdmVector(project, targetVector, 3, 0.55);
         if (topMatches.length > 0) {
@@ -1154,7 +1175,8 @@ export async function sessionSaveImageHandler(args: unknown) {
   const { project, file_path, description } = args;
 
   // Resolve path (supports relative paths)
-  const resolvedPath = nodePath.resolve(file_path);
+  const baseCwd = requestContext()?.cwd ?? process.cwd();
+  const resolvedPath = nodePath.isAbsolute(file_path) ? file_path : nodePath.resolve(baseCwd, file_path);
   if (!fs.existsSync(resolvedPath)) {
     return {
       content: [{ type: "text", text: `Error: File not found at "${resolvedPath}".` }],
@@ -1176,7 +1198,7 @@ export async function sessionSaveImageHandler(args: unknown) {
   }
 
   // Setup media vault directory
-  const mediaDir = nodePath.join(os.homedir(), ".prism-mcp", "media", project);
+  const mediaDir = nodePath.join(getPrismDataDir(), "media", project);
   if (!fs.existsSync(mediaDir)) {
     fs.mkdirSync(mediaDir, { recursive: true });
   }
@@ -1279,7 +1301,7 @@ export async function sessionViewImageHandler(args: unknown) {
     };
   }
 
-  const vaultPath = nodePath.join(os.homedir(), ".prism-mcp", "media", project, imgMeta.filename);
+  const vaultPath = nodePath.join(getPrismDataDir(), "media", project, imgMeta.filename);
   if (!fs.existsSync(vaultPath)) {
     return {
       content: [{
@@ -1355,6 +1377,13 @@ export async function sessionForgetMemoryHandler(args: unknown) {
       // FTS5 triggers (SQLite) or Supabase cascades clean up indexes.
       await storage.hardDeleteLedger(memory_id, PRISM_USER_ID);
 
+      try {
+        await storage.deleteJob(`embed_ledger:${memory_id}`);
+        await storage.purgeRequestLogEntriesContaining(memory_id);
+      } catch (cleanupErr) {
+        debugLog(`[session_forget_memory] Cleanup of job/request-log rows failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+      }
+
       debugLog(`[session_forget_memory] Hard-deleted entry ${memory_id}`);
 
       return {
@@ -1372,6 +1401,12 @@ export async function sessionForgetMemoryHandler(args: unknown) {
       // The entry remains in the database but is excluded from ALL search
       // queries (vector, FTS5, and context loading).
       await storage.softDeleteLedger(memory_id, PRISM_USER_ID, reason);
+
+      try {
+        await storage.deleteJob(`embed_ledger:${memory_id}`);
+      } catch (cleanupErr) {
+        debugLog(`[session_forget_memory] Cleanup of job row failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+      }
 
       debugLog(`[session_forget_memory] Soft-deleted entry ${memory_id} (reason: ${reason || "none"})`);
 
@@ -1441,23 +1476,13 @@ export async function sessionSaveExperienceHandler(args: unknown) {
     importance: event_type === "correction" ? 1 : 0,
   });
 
-  // Fire-and-forget embedding generation
   if (result) {
-    const embeddingText = summary;
     const savedEntry = Array.isArray(result) ? result[0] : result;
     const entryId = (savedEntry as any)?.id;
 
     if (entryId) {
-      getLLMProvider().generateEmbedding(embeddingText)
-        .then(async (embedding) => {
-          await storage.patchLedger(entryId, {
-            embedding: JSON.stringify(embedding),
-          });
-          debugLog(`[session_save_experience] Embedding saved for entry ${entryId}`);
-        })
-        .catch((err) => {
-          console.error(`[session_save_experience] Embedding failed (non-fatal): ${err.message}`);
-        });
+      await storage.enqueueJob(`embed_ledger:${entryId}`, "embed_ledger", JSON.stringify({ entryId }));
+      kickJobWorker();
     }
   }
 
@@ -1481,8 +1506,10 @@ export async function sessionExportMemoryHandler(args: unknown) {
     };
   }
 
-  const { output_dir, format = "json" } = args;
+  const { format = "json" } = args;
   const requestedProject = (args as { project?: string }).project;
+  const baseCwd = requestContext()?.cwd ?? process.cwd();
+  const output_dir = isAbsolute(args.output_dir) ? args.output_dir : join(baseCwd, args.output_dir);
 
   // Validate output directory
   if (!existsSync(output_dir)) {

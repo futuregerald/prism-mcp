@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from 'vitest';
-import { SparseDistributedMemory, hammingDistance, D_ADDR_UINT32 } from '../../src/sdm/sdmEngine';
+import { SparseDistributedMemory, hammingDistance, D_ADDR_UINT32, getSdmEngine, hasSdmEngine } from '../../src/sdm/sdmEngine';
 
 test('Hamming distance popcount logic', () => {
   const a = new Uint32Array([0b11110000_10101010_11001100_00110011]);
@@ -158,6 +158,61 @@ describe('SDM Engine — Edge Cases & Error Guards', () => {
     const recall1 = sdm1.readHdc(pattern, 20);
     const recall2 = sdm2.readHdc(pattern, 20);
     expect(hammingDistance(recall1, recall2)).toBe(0);
+  });
+});
+
+describe('SDM Engine — hasWrites tracking', () => {
+  it('a fresh engine has hasWrites=false', () => {
+    const sdm = new SparseDistributedMemory(1001);
+    expect(sdm.hasWrites).toBe(false);
+  });
+
+  it('write() sets hasWrites=true', () => {
+    const sdm = new SparseDistributedMemory(1002);
+    const vector = new Float32Array(768);
+    vector[0] = 0.5;
+    sdm.write(vector);
+    expect(sdm.hasWrites).toBe(true);
+  });
+
+  it('importState() with an all-zero matrix leaves hasWrites=false', () => {
+    const sdm = new SparseDistributedMemory(1003);
+    const zeroState = new Float32Array(10_000 * 768);
+    sdm.importState(zeroState);
+    expect(sdm.hasWrites).toBe(false);
+  });
+
+  it('importState() with a non-zero matrix sets hasWrites=true', () => {
+    const sdm = new SparseDistributedMemory(1004);
+    const state = new Float32Array(10_000 * 768);
+    state[42] = 1.0;
+    sdm.importState(state);
+    expect(sdm.hasWrites).toBe(true);
+  });
+});
+
+describe('recall from a never-written engine is equivalent to a zero vector', () => {
+  it('read() on a fresh engine returns the same all-zero vector as skipping allocation', () => {
+    const sdm = new SparseDistributedMemory(2001);
+    const query = new Float32Array(768);
+    query[5] = 0.7;
+
+    const result = sdm.read(query);
+    const substitute = new Float32Array(768);
+
+    expect(Array.from(result)).toEqual(Array.from(substitute));
+  });
+});
+
+describe('hasSdmEngine', () => {
+  it('returns false for a project never passed to getSdmEngine', () => {
+    expect(hasSdmEngine('sdm-engine-test-untouched-project')).toBe(false);
+  });
+
+  it('returns true once getSdmEngine has been called for a project', () => {
+    const project = 'sdm-engine-test-touched-project';
+    getSdmEngine(project);
+    expect(hasSdmEngine(project)).toBe(true);
   });
 });
 

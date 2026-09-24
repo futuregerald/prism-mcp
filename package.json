@@ -9,7 +9,9 @@
   "bin": {
     "prism": "dist/cli.js",
     "prism-mcp-server": "dist/server.js",
-    "prism-import": "dist/utils/universalImporter.js"
+    "prism-import": "dist/utils/universalImporter.js",
+    "prism-daemon": "dist/daemon.js",
+    "prism-connect": "dist/shim.js"
   },
   "files": [
     "dist"

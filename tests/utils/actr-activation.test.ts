@@ -610,6 +610,73 @@ describe("AccessLogBuffer", () => {
 
     expect(mockDb.execute).toHaveBeenCalledTimes(1);
   });
+
+  it("should insert immediately on push() when writeThrough is true", async () => {
+    const { AccessLogBuffer } = await import(
+      "../../src/utils/accessLogBuffer.js"
+    );
+    const buffer = new AccessLogBuffer(mockDb as any, 0, { writeThrough: true });
+
+    buffer.push("entry-1", undefined);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockDb.execute).toHaveBeenCalledTimes(1);
+    const call = mockDb.execute.mock.calls[0][0];
+    expect(call.sql).toContain("INSERT INTO memory_access_log");
+    expect(call.args.length).toBe(3);
+  });
+
+  it("should keep flushIntervalMs=0 as manual-only when writeThrough is not set", async () => {
+    const { AccessLogBuffer } = await import(
+      "../../src/utils/accessLogBuffer.js"
+    );
+    const buffer = new AccessLogBuffer(mockDb as any, 0);
+
+    buffer.push("entry-1", undefined);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockDb.execute).not.toHaveBeenCalled();
+  });
+
+  it("should debugLog a write-through insert failure instead of throwing", async () => {
+    const { AccessLogBuffer } = await import(
+      "../../src/utils/accessLogBuffer.js"
+    );
+    mockDb.execute.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+    const buffer = new AccessLogBuffer(mockDb as any, 0, { writeThrough: true });
+
+    expect(() => buffer.push("entry-1", undefined)).not.toThrow();
+
+    await buffer.dispose();
+  });
+
+  it("should await pending write-through inserts on dispose", async () => {
+    const { AccessLogBuffer } = await import(
+      "../../src/utils/accessLogBuffer.js"
+    );
+    let resolveInsert: (() => void) | undefined;
+    mockDb.execute.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveInsert = () => resolve({ rows: [] }); })
+    );
+    const buffer = new AccessLogBuffer(mockDb as any, 0, { writeThrough: true });
+
+    buffer.push("entry-1", undefined);
+
+    let disposed = false;
+    const disposePromise = buffer.dispose().then(() => { disposed = true; });
+
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    resolveInsert!();
+    await disposePromise;
+
+    expect(disposed).toBe(true);
+  });
 });
 
 

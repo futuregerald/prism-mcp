@@ -86,6 +86,40 @@ import { notifyResourceUpdate } from "../server.js";
  *
  * After saving, generates an embedding vector for the entry via fire-and-forget.
  */
+export interface LedgerEmbeddingCandidateParams {
+  limit: number;
+  project?: string;
+  cursorId?: string;
+}
+
+export async function findLedgerEntriesMissingEmbeddings(
+  storage: Awaited<ReturnType<typeof getStorage>>,
+  params: LedgerEmbeddingCandidateParams
+): Promise<unknown[]> {
+  const queryParams: Record<string, string> = {
+    "embedding": "is.null",
+    "archived_at": "is.null",
+    user_id: `eq.${PRISM_USER_ID}`,
+    order: "id.asc",
+    limit: String(params.limit),
+    select: "id,summary,decisions,project",
+  };
+  if (params.cursorId) {
+    queryParams.id = `gt.${params.cursorId}`;
+  }
+  if (params.project) {
+    queryParams.project = `eq.${params.project}`;
+  }
+  return storage.getLedgerEntries(queryParams);
+}
+
+export function computeLedgerEmbeddingText(entry: { summary?: string; decisions?: string[] }): string {
+  return [
+    entry.summary || "",
+    ...(entry.decisions || []),
+  ].filter(Boolean).join(" | ");
+}
+
 export async function backfillEmbeddingsHandler(args: unknown) {
   if (!isBackfillEmbeddingsArgs(args)) {
     throw new Error("Invalid arguments for session_backfill_embeddings");
@@ -115,23 +149,11 @@ export async function backfillEmbeddingsHandler(args: unknown) {
 
   const storage = await getStorage();
 
-  // Find entries missing embeddings
-  const params: Record<string, string> = {
-    "embedding": "is.null",
-    "archived_at": "is.null",
-    user_id: `eq.${PRISM_USER_ID}`,
-    order: "id.asc",
-    limit: String(safeLimit),
-    select: "id,summary,decisions,project",
-  };
-  if ((args as any)._cursor_id) {
-    params.id = `gt.${(args as any)._cursor_id}`;
-  }
-  if (project) {
-    params.project = `eq.${project}`;
-  }
-
-  const entries = await storage.getLedgerEntries(params);
+  const entries = await findLedgerEntriesMissingEmbeddings(storage, {
+    limit: safeLimit,
+    project,
+    cursorId: (args as any)._cursor_id,
+  });
 
   if (entries.length === 0) {
     return {
@@ -164,10 +186,7 @@ export async function backfillEmbeddingsHandler(args: unknown) {
   for (const entry of entries) {
     try {
       const e = entry as any;
-      const textToEmbed = [
-        e.summary || "",
-        ...(e.decisions || []),
-      ].filter(Boolean).join(" | ");
+      const textToEmbed = computeLedgerEmbeddingText(e);
 
       if (!textToEmbed.trim()) {
         debugLog(`[backfill] Skipping entry ${e.id}: no text content`);
@@ -501,6 +520,13 @@ export async function deepStoragePurgeHandler(args: unknown) {
     userId: PRISM_USER_ID,
   });
 
+  if (!dryRun) {
+    try {
+      await storage.pruneRequestLog(0);
+    } catch (cleanupErr) {
+      debugLog(`[deep_storage_purge] prism_request_log purge failed (non-fatal): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+    }
+  }
 
   // Format bytes as human-readable MB with 2 decimal places
   const mbs = (result.reclaimedBytes / (1024 * 1024)).toFixed(2);

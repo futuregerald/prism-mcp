@@ -1,21 +1,17 @@
 import { createClient } from "@libsql/client";
-import { resolve, dirname } from "path";
-import { homedir } from "os";
-import { existsSync, mkdirSync } from "fs";
+import { resolve } from "path";
+import { getPrismDataDir } from "../utils/dataDir.js";
 
 // We use a small, dedicated DB just for configuration settings.
 // This solves the chicken-and-egg problem: we need to know WHICH
 // storage backend to boot *before* we can use that backend.
-//
-// Stored in ~/.prism-mcp/prism-config.db — the same root directory
-// used by sqlite.ts and autoCapture.ts for all Prism files.
 //
 // ⚡ BOOT SETTINGS NOTE:
 //   Settings in this store that affect server initialization (e.g.
 //   PRISM_STORAGE, PRISM_ENABLE_HIVEMIND) are read only at startup.
 //   Changing them at runtime requires a server restart to take effect.
 //   Runtime-only settings (e.g. dashboard_theme) take effect immediately.
-const CONFIG_PATH = resolve(homedir(), ".prism-mcp", "prism-config.db");
+let CONFIG_PATH: string | null = null;
 
 let configClient: ReturnType<typeof createClient> | null = null;
 let initialized = false;
@@ -29,12 +25,8 @@ let settingsCache: Record<string, string> | null = null;
 
 function getClient() {
   if (!configClient) {
-    // Ensure the directory exists before opening the DB.
-    // In Docker/CI (e.g. Glama), ~/.prism-mcp/ doesn't exist yet,
-    // and libSQL throws SQLITE_CANTOPEN (error 14) without it.
-    const dir = dirname(CONFIG_PATH);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    if (!CONFIG_PATH) {
+      CONFIG_PATH = resolve(getPrismDataDir(), "prism-config.db");
     }
     configClient = createClient({
       url: `file:${CONFIG_PATH}`,
@@ -46,8 +38,12 @@ function getClient() {
 export async function initConfigStorage() {
   if (initialized) return;
 
+  CONFIG_PATH = resolve(getPrismDataDir(), "prism-config.db");
+
   try {
     const client = getClient();
+    await client.execute("PRAGMA synchronous=FULL");
+    await client.execute("PRAGMA busy_timeout=5000");
     await client.execute(`
       CREATE TABLE IF NOT EXISTS system_settings (
         key TEXT PRIMARY KEY,

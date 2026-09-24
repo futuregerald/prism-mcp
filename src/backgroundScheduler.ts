@@ -418,6 +418,10 @@ export async function runSchedulerSweep(
 
   const storage = await getStorage();
 
+  storage.pruneRequestLog(24 * 60 * 60 * 1000).catch(err => {
+    debugLog(`[Scheduler] prism_request_log prune failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  });
+
   // ─── Backend-Aware Distributed Lock (v6.2) ───────────────────────────────
   //
   //   SQLite: configStorage key in local JSON file (single-node, fast)
@@ -593,6 +597,7 @@ export async function runSchedulerSweep(
       for (const project of activeProjects) {
         try {
           const sdm = getSdmEngine(project);
+          if (!sdm.hasWrites) continue;
           const state = sdm.exportState();
           await storage.saveSdmState(project, state);
           result.tasks.sdmFlush.projectsFlushed++;

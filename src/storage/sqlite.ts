@@ -19,10 +19,10 @@
 import { createClient, type Client, type InValue } from "@libsql/client";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 import { randomUUID } from "crypto";
 import { AccessLogBuffer } from "../utils/accessLogBuffer.js";
-import { PRISM_ACTR_BUFFER_FLUSH_MS } from "../config.js";
+import { getPrismDataDir } from "../utils/dataDir.js";
+import { PRISM_ACTR_BUFFER_FLUSH_MS, PRISM_ACTR_WRITE_THROUGH } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 
 import type {
@@ -43,11 +43,20 @@ import type {
   VerificationHarness,     // v7.2.0
   ValidationResult,        // v7.2.0
   SpreadingActivationOptions, // v8.0: Spreading Activation
+  PrismJob,
+  RequestLogRow,
 } from "./interface.js";
 
 import { debugLog } from "../utils/logger.js";
 import { getSdmEngine } from "../sdm/sdmEngine.js";
 import { SafetyController } from "../darkfactory/safetyController.js";
+
+function isAllZero(state: Float32Array): boolean {
+  for (let i = 0; i < state.length; i++) {
+    if (state[i] !== 0) return false;
+  }
+  return true;
+}
 
 export class SqliteStorage implements StorageBackend {
   private db!: Client;
@@ -76,11 +85,7 @@ export class SqliteStorage implements StorageBackend {
       const dir = path.dirname(resolvedPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     } else {
-      const prismDir = path.join(os.homedir(), ".prism-mcp");
-      if (!fs.existsSync(prismDir)) {
-        fs.mkdirSync(prismDir, { recursive: true });
-      }
-      resolvedPath = path.join(prismDir, "data.db");
+      resolvedPath = path.join(getPrismDataDir(), "data.db");
     }
 
     this.dbPath = resolvedPath;
@@ -91,6 +96,8 @@ export class SqliteStorage implements StorageBackend {
 
     // Enable WAL mode for better concurrent read performance
     await this.db.execute("PRAGMA journal_mode=WAL");
+    await this.db.execute("PRAGMA synchronous=FULL");
+    await this.db.execute("PRAGMA busy_timeout=5000");
 
     // v6.0: Enable foreign key enforcement — required for ON DELETE CASCADE
     // in memory_links table. Without this, CASCADE is silently ignored.
@@ -102,7 +109,9 @@ export class SqliteStorage implements StorageBackend {
     // v7.0: Initialize the ACT-R access log write buffer.
     // The buffer batches logAccess() calls into periodic single-INSERT flushes
     // to prevent SQLite SQLITE_BUSY contention (Rule #1).
-    this.accessLogBuffer = new AccessLogBuffer(this.db, PRISM_ACTR_BUFFER_FLUSH_MS);
+    this.accessLogBuffer = new AccessLogBuffer(this.db, PRISM_ACTR_BUFFER_FLUSH_MS, {
+      writeThrough: PRISM_ACTR_WRITE_THROUGH,
+    });
 
     debugLog(`[SqliteStorage] Initialized at ${this.dbPath}`);
   }
@@ -791,6 +800,59 @@ export class SqliteStorage implements StorageBackend {
     // H7: Create index after the column exists (post-migration)
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
+    );
+
+    const requestLogInfo = await this.db.execute(`PRAGMA table_info(prism_request_log)`);
+    const requestLogCols = new Set(requestLogInfo.rows.map(row => String(row.name)));
+    if (requestLogCols.size > 0 && !requestLogCols.has("args_hash")) {
+      await this.db.execute(`ALTER TABLE prism_request_log RENAME TO prism_request_log_pre_b1`);
+      await this.db.execute(`
+        CREATE TABLE prism_request_log (
+          key TEXT PRIMARY KEY,
+          args_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          response TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      await this.db.execute(`
+        INSERT INTO prism_request_log (key, args_hash, status, owner, response, created_at, updated_at)
+        SELECT key, '', 'done', '', response, created_at, created_at FROM prism_request_log_pre_b1
+      `);
+      await this.db.execute(`DROP TABLE prism_request_log_pre_b1`);
+    } else {
+      await this.db.execute(`
+        CREATE TABLE IF NOT EXISTS prism_request_log (
+          key TEXT PRIMARY KEY,
+          args_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          response TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+    }
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_request_log_created_at ON prism_request_log(created_at)`
+    );
+
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS prism_jobs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        run_after INTEGER NOT NULL,
+        last_error TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    await this.db.execute(`DROP INDEX IF EXISTS idx_prism_jobs_run_after`);
+    await this.db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_prism_jobs_run_after_active ON prism_jobs(run_after) WHERE attempts < 5`
     );
 
     // ─── v6.1 Migration: Integrity Check ──────────────────────
@@ -2788,11 +2850,16 @@ export class SqliteStorage implements StorageBackend {
   }
 
   async saveSdmState(project: string, state: Float32Array): Promise<void> {
+    if (isAllZero(state)) {
+      debugLog(`[SqliteStorage] Skipping SDM state write for "${project}": all counters are 0`);
+      return;
+    }
+
     // The state is a Float32Array. We need its underlying buffer for SQLite.
     // Wrap in Uint8Array to satisfy @libsql/client InValue typing which rejects SharedArrayBuffer
     const buffer = new Uint8Array(state.buffer, state.byteOffset, state.byteLength);
     const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
-    
+
     // We do an UPSERT (INSERT ... ON CONFLICT REPLACE).
     await this.db.execute({
       sql: `INSERT INTO sdm_state (project, counters, address_version, updated_at) 
@@ -2805,6 +2872,177 @@ export class SqliteStorage implements StorageBackend {
     });
     
     debugLog(`[SqliteStorage] Persisted SDM state v${SDM_ADDRESS_VERSION} to disk for project: ${project}`);
+  }
+
+  async pruneZeroSdmState(): Promise<{ pruned: string[] }> {
+    const result = await this.db.execute(`SELECT project, counters FROM sdm_state`);
+    const pruned: string[] = [];
+
+    for (const row of result.rows) {
+      const project = row.project as string;
+      const blob = row.counters as any;
+      let counters: Float32Array;
+      if (blob instanceof ArrayBuffer) {
+        counters = new Float32Array(blob);
+      } else if (blob instanceof Uint8Array) {
+        counters = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+      } else {
+        continue;
+      }
+
+      if (isAllZero(counters)) {
+        await this.db.execute({ sql: `DELETE FROM sdm_state WHERE project = ?`, args: [project] });
+        pruned.push(project);
+      }
+    }
+
+    if (pruned.length > 0) {
+      debugLog(`[SqliteStorage] pruneZeroSdmState: removed ${pruned.length} all-zero project(s): ${pruned.join(", ")}`);
+    }
+
+    return { pruned };
+  }
+
+  async getRequestLogRow(key: string): Promise<RequestLogRow | null> {
+    const result = await this.db.execute({
+      sql: `SELECT key, args_hash, status, owner, response, created_at, updated_at
+            FROM prism_request_log WHERE key = ?`,
+      args: [key],
+    });
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      key: row.key as string,
+      argsHash: row.args_hash as string,
+      status: row.status as "pending" | "done",
+      owner: row.owner as string,
+      response: (row.response as string | null) ?? null,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  async insertPendingRequestLog(key: string, argsHash: string, owner: string): Promise<boolean> {
+    const now = Date.now();
+    const result = await this.db.execute({
+      sql: `INSERT INTO prism_request_log (key, args_hash, status, owner, response, created_at, updated_at)
+            VALUES (?, ?, 'pending', ?, NULL, ?, ?)
+            ON CONFLICT(key) DO NOTHING`,
+      args: [key, argsHash, owner, now, now],
+    });
+    return (result.rowsAffected ?? 0) > 0;
+  }
+
+  async completeRequestLog(key: string, response: string): Promise<void> {
+    await this.db.execute({
+      sql: `UPDATE prism_request_log SET status = 'done', response = ?, updated_at = ? WHERE key = ?`,
+      args: [response, Date.now(), key],
+    });
+  }
+
+  async deleteRequestLog(key: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_request_log WHERE key = ?`,
+      args: [key],
+    });
+  }
+
+  async reclaimRequestLog(key: string, fromOwner: string, toOwner: string): Promise<boolean> {
+    const result = await this.db.execute({
+      sql: `UPDATE prism_request_log SET owner = ?, updated_at = ?
+            WHERE key = ? AND status = 'pending' AND owner = ?`,
+      args: [toOwner, Date.now(), key, fromOwner],
+    });
+    return (result.rowsAffected ?? 0) > 0;
+  }
+
+  async pruneRequestLog(olderThanMs: number): Promise<void> {
+    const cutoff = Date.now() - olderThanMs;
+    await this.db.execute({
+      sql: `DELETE FROM prism_request_log WHERE created_at <= ?`,
+      args: [cutoff],
+    });
+  }
+
+  async enqueueJob(id: string, kind: string, payload: string): Promise<void> {
+    await this.db.execute({
+      sql: `INSERT INTO prism_jobs (id, kind, payload, attempts, run_after, created_at)
+            VALUES (?, ?, ?, 0, ?, ?)
+            ON CONFLICT(id) DO NOTHING`,
+      args: [id, kind, payload, Date.now(), Date.now()],
+    });
+  }
+
+  async claimNextJob(nowMs: number, leaseMs: number): Promise<PrismJob | null> {
+    const result = await this.db.execute({
+      sql: `UPDATE prism_jobs
+            SET run_after = ?, attempts = attempts + 1
+            WHERE id = (
+              SELECT id FROM prism_jobs
+              WHERE run_after <= ? AND attempts < 5
+              ORDER BY run_after ASC
+              LIMIT 1
+            )
+            RETURNING id, kind, payload, attempts, run_after, last_error, created_at`,
+      args: [nowMs + leaseMs, nowMs],
+    });
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      id: row.id as string,
+      kind: row.kind as string,
+      payload: row.payload as string,
+      attempts: row.attempts as number,
+      run_after: row.run_after as number,
+      last_error: (row.last_error as string) ?? null,
+      created_at: row.created_at as number,
+    };
+  }
+
+  async completeJob(id: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_jobs WHERE id = ?`,
+      args: [id],
+    });
+  }
+
+  async deleteJob(id: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_jobs WHERE id = ?`,
+      args: [id],
+    });
+  }
+
+  async purgeRequestLogEntriesContaining(needle: string): Promise<void> {
+    await this.db.execute({
+      sql: `DELETE FROM prism_request_log WHERE response LIKE ?`,
+      args: [`%${needle}%`],
+    });
+  }
+
+  async failJob(id: string, error: string, retryAtMs: number): Promise<void> {
+    await this.db.execute({
+      sql: `UPDATE prism_jobs SET last_error = ?, run_after = ? WHERE id = ?`,
+      args: [error, retryAtMs, id],
+    });
+  }
+
+  async resetDeadJobs(): Promise<number> {
+    const result = await this.db.execute({
+      sql: `UPDATE prism_jobs SET attempts = 0, last_error = NULL, run_after = ? WHERE attempts >= 5`,
+      args: [Date.now()],
+    });
+    return result.rowsAffected ?? 0;
+  }
+
+  async getExistingJobIds(ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => "?").join(",");
+    const result = await this.db.execute({
+      sql: `SELECT id FROM prism_jobs WHERE id IN (${placeholders})`,
+      args: ids,
+    });
+    return new Set(result.rows.map(row => String(row.id)));
   }
 
   // ─── v6.5: HDC State Machines & Cognitive Logic ───────────────────────

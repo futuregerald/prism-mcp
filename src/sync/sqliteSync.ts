@@ -28,9 +28,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 import { SyncBus, SyncEvent } from "./index.js";
 import { debugLog } from "../utils/logger.js";
+import { getPrismDataDir } from "../utils/dataDir.js";
 
 export class SqliteSyncBus extends SyncBus {
   private lockFilePath: string;
@@ -38,10 +38,7 @@ export class SqliteSyncBus extends SyncBus {
 
   constructor() {
     super();
-    const prismDir = path.join(os.homedir(), ".prism-mcp");
-    if (!fs.existsSync(prismDir)) {
-      fs.mkdirSync(prismDir, { recursive: true });
-    }
+    const prismDir = getPrismDataDir();
     this.lockFilePath = path.join(prismDir, "sync.lock");
 
     // Ensure the lockfile exists

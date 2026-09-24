@@ -29,6 +29,16 @@ Upstream had six `GOOGLE_API_KEY` checks scattered across handler files that wou
 
 **Files changed:** `graphHandlers.ts`, `ledgerHandlers.ts`, `factMerger.ts`, `dashboard/server.ts`, `factory.ts`
 
+### Changed: Mind Palace Dashboard Is Opt-In
+
+Upstream starts the dashboard HTTP server on every boot. This fork gates it behind `PRISM_ENABLE_DASHBOARD=true`.
+
+Each MCP instance binds `PRISM_DASHBOARD_PORT` (default `3000`), falling back to +1 and +2 when taken, so a handful of concurrent editor sessions squat `3000`–`3002` — the ports a local dev server usually wants. The dashboard also ran a TTL sweep; that is already covered by the Background Scheduler (`PRISM_SCHEDULER_ENABLED`, on by default), so nothing is lost when the dashboard is off.
+
+Note that "Auto-Load Projects" is configured only through the dashboard UI. Existing values still apply — they are read from `prism-config.db` at startup — but changing them requires enabling the dashboard.
+
+**Files changed:** `config.ts`, `server.ts`
+
 ### Upstream Status
 
 This fork diverged from upstream at `ecd1424` (v9.4.6). The changes are conceptually independent from upstream's recent work (security hardening, ABA protocol, split-brain fixes), but merging will require conflict resolution since both sides modified some of the same files.
@@ -1139,7 +1149,8 @@ Requires `PRISM_DARK_FACTORY_ENABLED=true`.
 | `PRISM_AUTO_CAPTURE` | No | `"true"` to auto-snapshot dev server UI states (HTML/DOM) for visual memory |
 | `PRISM_CAPTURE_PORTS` | No | Comma-separated ports (default: `3000,3001,5173,8080`) |
 | `PRISM_DEBUG_LOGGING` | No | `"true"` for verbose logs |
-| `PRISM_DASHBOARD_PORT` | No | Dashboard port (default: `3000`) |
+| `PRISM_ENABLE_DASHBOARD` | No | `"true"` to serve the Mind Palace dashboard (fork default: disabled) |
+| `PRISM_DASHBOARD_PORT` | No | Dashboard port when enabled (default: `3000`) |
 | `PRISM_SCHEDULER_ENABLED` | No | `"false"` to disable background maintenance (default: enabled) |
 | `PRISM_SCHEDULER_INTERVAL_MS` | No | Maintenance interval in ms (default: `43200000` = 12h) |
 | `PRISM_SCHOLAR_ENABLED` | No | `"true"` to enable Web Scholar pipeline |

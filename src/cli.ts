@@ -83,7 +83,7 @@ program
         }
 
         const d = data as Record<string, any>;
-        const gitState = getCurrentGitState();
+        const gitState = await getCurrentGitState();
 
         const output = {
           agent_name: agentName || null,
@@ -130,7 +130,7 @@ program
         }
 
         // Append git state (not included in the MCP handler output)
-        const gitState = getCurrentGitState();
+        const gitState = await getCurrentGitState();
         if (gitState.isRepo) {
           output += `\n\n🔧 Git: ${gitState.branch} @ ${gitState.commitSha?.substring(0, 7)} (Prism v${SERVER_CONFIG.version})`;
         }

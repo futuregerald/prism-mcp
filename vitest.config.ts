@@ -45,5 +45,6 @@ export default defineConfig({
     // Global setup runs once before all test suites
     // Used to ensure temp directories exist and env vars are set
     setupFiles: ["tests/setup.ts"],
+    globalSetup: ["tests/globalSetup.ts"],
   },
 });

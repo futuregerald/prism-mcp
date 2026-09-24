@@ -166,6 +166,17 @@ export const PRISM_DEBUG_LOGGING = process.env.PRISM_DEBUG_LOGGING === "true";
 
 export const PRISM_ENABLE_HIVEMIND = process.env.PRISM_ENABLE_HIVEMIND === "true";
 
+// ─── FORK: Mind Palace Dashboard ─────────────────────────────
+// Upstream starts the dashboard HTTP server on every boot. This fork
+// makes it opt-in — set PRISM_ENABLE_DASHBOARD=true to serve it.
+//
+// Every MCP instance binds a port (PRISM_DASHBOARD_PORT, then +1/+2),
+// so a few concurrent editor sessions squat 3000-3002 — ports a dev
+// server usually wants. The TTL sweep the dashboard also ran is
+// covered by the Background Scheduler (PRISM_SCHEDULER_ENABLED).
+
+export const PRISM_ENABLE_DASHBOARD = process.env.PRISM_ENABLE_DASHBOARD === "true";
+
 // ─── v4.1: Auto-Load Projects ────────────────────────────────
 // Auto-load is configured exclusively via the Mind Palace dashboard
 // ("Auto-Load Projects" checkboxes in Settings). The setting is stored
@@ -339,6 +350,8 @@ export const PRISM_ACTR_MAX_ACCESSES_PER_ENTRY = parseInt(
 export const PRISM_ACTR_BUFFER_FLUSH_MS = parseInt(
   process.env.PRISM_ACTR_BUFFER_FLUSH_MS || "5000", 10
 );
+
+export const PRISM_ACTR_WRITE_THROUGH = process.env.PRISM_ACTR_WRITE_THROUGH === "true";
 
 /** Days to retain access log entries before pruning. (Default: 90) */
 export const PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS = parseInt(

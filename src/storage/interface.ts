@@ -274,6 +274,26 @@ export interface HealthStats {
   totalCrdtMerges: number;
 }
 
+export interface PrismJob {
+  id: string;
+  kind: string;
+  payload: string;
+  attempts: number;
+  run_after: number;
+  last_error: string | null;
+  created_at: number;
+}
+
+export interface RequestLogRow {
+  key: string;
+  argsHash: string;
+  status: "pending" | "done";
+  owner: string;
+  response: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ─── Storage Backend Interface ────────────────────────────────
 
 /**
@@ -630,6 +650,36 @@ export interface StorageBackend {
    * @param state - The 10,000 x 768 element Float32Array
    */
   saveSdmState(project: string, state: Float32Array): Promise<void>;
+
+  pruneZeroSdmState(): Promise<{ pruned: string[] }>;
+
+  getRequestLogRow(key: string): Promise<RequestLogRow | null>;
+
+  insertPendingRequestLog(key: string, argsHash: string, owner: string): Promise<boolean>;
+
+  completeRequestLog(key: string, response: string): Promise<void>;
+
+  deleteRequestLog(key: string): Promise<void>;
+
+  reclaimRequestLog(key: string, fromOwner: string, toOwner: string): Promise<boolean>;
+
+  pruneRequestLog(olderThanMs: number): Promise<void>;
+
+  enqueueJob(id: string, kind: string, payload: string): Promise<void>;
+
+  claimNextJob(nowMs: number, leaseMs: number): Promise<PrismJob | null>;
+
+  completeJob(id: string): Promise<void>;
+
+  deleteJob(id: string): Promise<void>;
+
+  purgeRequestLogEntriesContaining(needle: string): Promise<void>;
+
+  failJob(id: string, error: string, retryAtMs: number): Promise<void>;
+
+  resetDeadJobs(): Promise<number>;
+
+  getExistingJobIds(ids: string[]): Promise<Set<string>>;
 
   /**
    * Fetch all compressed embeddings for a project to enable fast JS-space Hamming scanning.
