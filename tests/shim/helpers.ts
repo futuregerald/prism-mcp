@@ -98,7 +98,6 @@ export function killPid(pid: number, signal: NodeJS.Signals = "SIGKILL"): void {
   try {
     process.kill(pid, signal);
   } catch {
-    // Already gone.
   }
 }
 
