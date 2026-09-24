@@ -76,6 +76,38 @@ async function waitForSocket(socketPath: string, maxWaitMs: number): Promise<boo
   return false;
 }
 
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const LOCK_PID_ALIVE_WAIT_MS = 30_000;
+
+async function waitForPidExitOrSocket(
+  pid: number,
+  socketPath: string,
+  maxWaitMs: number
+): Promise<"socket" | "pid-exited" | "timeout"> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    if (await probeSocket(socketPath, 200)) return "socket";
+    if (!isPidAlive(pid)) return "pid-exited";
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return "timeout";
+}
+
+function safeUnlinkSocket(socketPath: string): void {
+  try {
+    const st = fs.lstatSync(socketPath);
+    if (st.isSocket()) fs.unlinkSync(socketPath);
+  } catch { }
+}
+
 async function acquireOnce(paths: LockPaths, allowRetryOnEexist: boolean): Promise<LockResult> {
   const { socketPath, lockPath } = paths;
 
@@ -85,6 +117,13 @@ async function acquireOnce(paths: LockPaths, allowRetryOnEexist: boolean): Promi
 
   const lock = readLock(lockPath);
   if (lock) {
+    if (isPidAlive(lock.pid)) {
+      const outcome = await waitForPidExitOrSocket(lock.pid, socketPath, LOCK_PID_ALIVE_WAIT_MS);
+      if (outcome === "socket") {
+        return { alreadyRunning: true, paths };
+      }
+    }
+
     const ageMs = Date.now() - lock.startedAt;
     if (ageMs < 3000) {
       const cameUp = await waitForSocket(socketPath, 5000);
@@ -95,7 +134,7 @@ async function acquireOnce(paths: LockPaths, allowRetryOnEexist: boolean): Promi
   }
 
   try { fs.unlinkSync(lockPath); } catch { }
-  try { fs.unlinkSync(socketPath); } catch { }
+  safeUnlinkSocket(socketPath);
 
   const contents: LockFileContents = { pid: process.pid, startedAt: Date.now() };
   const wrote = writeLockExclusive(lockPath, contents);
@@ -120,10 +159,15 @@ export async function acquireDaemonLock(): Promise<LockResult> {
   return acquireOnce(paths, true);
 }
 
-export function releaseDaemonLock(paths: LockPaths): void {
+export function releaseDaemonLock(paths: LockPaths, ownInode: number): void {
   const lock = readLock(paths.lockPath);
   if (lock && lock.pid === process.pid) {
     try { fs.unlinkSync(paths.lockPath); } catch { }
   }
-  try { fs.unlinkSync(paths.socketPath); } catch { }
+  try {
+    const st = fs.lstatSync(paths.socketPath);
+    if (st.isSocket() && st.ino === ownInode) {
+      fs.unlinkSync(paths.socketPath);
+    }
+  } catch { }
 }

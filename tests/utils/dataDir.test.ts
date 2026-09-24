@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, statSync, rmSync, mkdtempSync } from "fs";
+import { existsSync, statSync, lstatSync, rmSync, mkdtempSync, mkdirSync, chmodSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -75,5 +75,33 @@ describe("getPrismDataDir", () => {
 
     rmSync(first, { recursive: true, force: true });
     rmSync(second, { recursive: true, force: true });
+  });
+
+  it("tightens an existing data dir that has looser-than-0700 permissions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "prism-datadir-loose-"));
+    chmodSync(dir, 0o755);
+    process.env.PRISM_DATA_DIR = dir;
+
+    const { getPrismDataDir } = await import("../../src/utils/dataDir.js");
+    const result = getPrismDataDir();
+
+    expect(result).toBe(dir);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses a data dir path that is a symlink", async () => {
+    const base = mkdtempSync(join(tmpdir(), "prism-datadir-symlink-"));
+    const real = join(base, "real");
+    mkdirSync(real, { mode: 0o700 });
+    const link = join(base, "link");
+    symlinkSync(real, link);
+    process.env.PRISM_DATA_DIR = link;
+
+    const { getPrismDataDir } = await import("../../src/utils/dataDir.js");
+    expect(() => getPrismDataDir()).toThrow(/symlink/);
+
+    rmSync(base, { recursive: true, force: true });
   });
 });

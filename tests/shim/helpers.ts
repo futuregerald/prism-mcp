@@ -27,15 +27,24 @@ export function freshDataDir(): string {
 export function daemonPidsForDataDir(dataDir: string): number[] {
   let listing = "";
   try {
-    listing = execFileSync("ps", ["-E", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    listing = execFileSync("ps", ["-ax", "-o", "pid=,args="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   } catch {
     return [];
   }
-  return listing
+  const daemonPids = listing
     .split("\n")
-    .filter(line => line.includes("dist/daemon.js") && (line.includes(`PRISM_DATA_DIR=${dataDir} `) || line.endsWith(`PRISM_DATA_DIR=${dataDir}`)))
-    .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
+    .map(line => line.trim().split(/\s+/))
+    .filter(fields => fields.length >= 3 && fields[2].endsWith("dist/daemon.js"))
+    .map(fields => parseInt(fields[0], 10))
     .filter(pid => Number.isFinite(pid) && pid !== process.pid);
+  return daemonPids.filter(pid => {
+    try {
+      const withEnv = execFileSync("ps", ["-E", "-p", String(pid), "-o", "args="], { encoding: "utf8" });
+      return withEnv.includes(`PRISM_DATA_DIR=${dataDir} `) || withEnv.trimEnd().endsWith(`PRISM_DATA_DIR=${dataDir}`);
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function terminateAllDaemonsForCreatedDataDirs(): Promise<void> {

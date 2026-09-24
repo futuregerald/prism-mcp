@@ -226,4 +226,83 @@ describe("ShimSession — daemon-to-client forwarding", () => {
     const line = notif("notifications/message", { level: "info" });
     expect(session.onDaemonLine(line)).toEqual([{ to: "client", line }]);
   });
+
+  it("forwards a server-initiated request (id + method) without touching in-flight, so it is never replayed as a client request", () => {
+    const session = newSession();
+    session.onConnected();
+
+    const serverRequest = req("srv-1", "sampling/createMessage", { foo: "bar" });
+    expect(session.onDaemonLine(serverRequest)).toEqual([{ to: "client", line: serverRequest }]);
+
+    session.onDisconnected(0);
+    const reconnectActions = toDaemon(session.onConnected());
+    expect(reconnectActions).toEqual([
+      JSON.stringify({ prism_hello: { v: 1, cwd: "/proj", clientId: "client-1" } }),
+    ]);
+  });
+});
+
+describe("ShimSession — client responses to server-initiated requests", () => {
+  it("forwards a client response (id, no method) to the daemon without tracking it as in-flight", () => {
+    const session = newSession();
+    session.onConnected();
+
+    const clientResponse = resp("srv-1", { ok: true });
+    expect(session.onClientLine(clientResponse, 0)).toEqual([{ to: "daemon", line: clientResponse }]);
+
+    session.onDisconnected(0);
+    const reconnectActions = toDaemon(session.onConnected());
+    expect(reconnectActions).toEqual([
+      JSON.stringify({ prism_hello: { v: 1, cwd: "/proj", clientId: "client-1" } }),
+    ]);
+  });
+
+  it("drops a client response instead of queueing it while disconnected", () => {
+    const session = newSession();
+    session.onConnected();
+    session.onDisconnected(0);
+
+    const clientResponse = resp("srv-1", { ok: true });
+    expect(session.onClientLine(clientResponse, 0)).toEqual([]);
+
+    const reconnectActions = toDaemon(session.onConnected());
+    expect(reconnectActions).toEqual([
+      JSON.stringify({ prism_hello: { v: 1, cwd: "/proj", clientId: "client-1" } }),
+    ]);
+  });
+});
+
+describe("ShimSession — notifications/cancelled", () => {
+  it("removes the cancelled request id from in-flight so it is not replayed", () => {
+    const session = newSession();
+    session.onConnected();
+
+    const line = req(4, "tools/call", { name: "session_load_context" });
+    session.onClientLine(line, 0);
+
+    session.onClientLine(notif("notifications/cancelled", { requestId: 4 }), 0);
+
+    session.onDisconnected(0);
+    const reconnectActions = toDaemon(session.onConnected());
+    expect(reconnectActions).toEqual([
+      JSON.stringify({ prism_hello: { v: 1, cwd: "/proj", clientId: "client-1" } }),
+    ]);
+  });
+});
+
+describe("ShimSession — idempotency key distinguishes id types", () => {
+  it("uses JSON.stringify(id) so numeric 1 and string \"1\" produce different keys", () => {
+    const session = newSession({ clientId: "abc" });
+    session.onConnected();
+
+    const numericLine = req(1, "tools/call", { name: "session_save_ledger", arguments: {} });
+    const [numericAction] = toDaemon(session.onClientLine(numericLine, 0));
+    const numericParsed = JSON.parse(numericAction);
+    expect(numericParsed.params._meta["prism/idempotencyKey"]).toBe("abc:1");
+
+    const stringLine = req("1", "tools/call", { name: "session_save_ledger", arguments: {} });
+    const [stringAction] = toDaemon(session.onClientLine(stringLine, 0));
+    const stringParsed = JSON.parse(stringAction);
+    expect(stringParsed.params._meta["prism/idempotencyKey"]).toBe('abc:"1"');
+  });
 });

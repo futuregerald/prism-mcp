@@ -55,8 +55,9 @@ export class ShimSession {
 
     const hasId = Object.prototype.hasOwnProperty.call(parsed, "id") && parsed.id !== undefined;
     const method = typeof parsed.method === "string" ? parsed.method : undefined;
+    const isRequest = hasId && method !== undefined;
 
-    if (hasId && method === "initialize") {
+    if (isRequest && method === "initialize") {
       this.initializeRequestRaw = rawLine;
     }
 
@@ -69,10 +70,18 @@ export class ShimSession {
       return this.forwardOrQueue(rawLine);
     }
 
-    if (hasId) {
+    if (!hasId && method === "notifications/cancelled") {
+      const requestId = parsed.params?.requestId;
+      if (requestId !== undefined) {
+        this.inFlight.delete(JSON.stringify(requestId));
+      }
+      return this.forwardOrQueue(rawLine);
+    }
+
+    if (isRequest) {
       let line = rawLine;
       if (method === "tools/call" && parsed.params && this.mutatingTools.has(parsed.params.name)) {
-        const meta = { ...(parsed.params._meta || {}), "prism/idempotencyKey": `${this.clientId}:${String(parsed.id)}` };
+        const meta = { ...(parsed.params._meta || {}), "prism/idempotencyKey": `${this.clientId}:${JSON.stringify(parsed.id)}` };
         const withMeta = { ...parsed, params: { ...parsed.params, _meta: meta } };
         line = JSON.stringify(withMeta);
       }
@@ -80,6 +89,13 @@ export class ShimSession {
       this.inFlight.set(key, { line });
       if (this.connected) {
         return [{ to: "daemon", line }];
+      }
+      return [];
+    }
+
+    if (hasId) {
+      if (this.connected) {
+        return [{ to: "daemon", line: rawLine }];
       }
       return [];
     }
@@ -102,7 +118,10 @@ export class ShimSession {
     }
 
     const hasId = Object.prototype.hasOwnProperty.call(parsed, "id") && parsed.id !== undefined;
-    if (hasId) {
+    const method = typeof parsed.method === "string" ? parsed.method : undefined;
+    const isServerRequest = hasId && method !== undefined;
+
+    if (hasId && !isServerRequest) {
       if (typeof parsed.id === "string" && parsed.id.startsWith(REINIT_ID_PREFIX)) {
         return [];
       }

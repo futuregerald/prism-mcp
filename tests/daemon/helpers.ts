@@ -1,4 +1,4 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as net from "node:net";
 import * as path from "node:path";
 import * as fs from "node:fs";
@@ -11,14 +11,10 @@ export function getDaemonEntry(): string {
   return DAEMON_ENTRY;
 }
 
-let builtThisProcess = false;
-
 export function ensureDaemonBuilt(): void {
-  if (builtThisProcess && fs.existsSync(DAEMON_ENTRY)) return;
   if (!fs.existsSync(DAEMON_ENTRY)) {
-    execSync("npm run build", { cwd: REPO_ROOT, stdio: "pipe" });
+    throw new Error(`Build missing — run npm run build before this suite (expected ${DAEMON_ENTRY})`);
   }
-  builtThisProcess = true;
 }
 
 export interface DaemonEnvOverrides {

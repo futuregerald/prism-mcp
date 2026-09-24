@@ -1,30 +1,31 @@
 #!/usr/bin/env node
-import * as fs from "node:fs";
-import { getLockPath } from "./daemon/instanceLock.js";
-import { acquireDaemonLock } from "./daemon/instanceLock.js";
+import * as net from "node:net";
+import { getSocketPath, acquireDaemonLock } from "./daemon/instanceLock.js";
 
-function readLockPid(): number | null {
-  try {
-    const raw = fs.readFileSync(getLockPath(), "utf8");
-    const parsed = JSON.parse(raw);
-    return typeof parsed?.pid === "number" ? parsed.pid : null;
-  } catch {
-    return null;
-  }
+function requestShutdownOverSocket(socketPath: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = net.createConnection(socketPath);
+    const onError = () => {
+      resolve(false);
+    };
+    socket.once("error", onError);
+    socket.once("connect", () => {
+      socket.off("error", onError);
+      socket.once("error", () => { });
+      socket.write(JSON.stringify({ prism_admin: { v: 1, action: "shutdown" } }) + "\n");
+      socket.end();
+      resolve(true);
+    });
+  });
 }
 
-function runRestart(): void {
-  const pid = readLockPid();
-  if (!pid) {
-    console.error("[prism-daemon] No lock file found — nothing to restart");
+async function runRestart(): Promise<void> {
+  const sent = await requestShutdownOverSocket(getSocketPath());
+  if (!sent) {
+    console.error("[prism-daemon] No daemon is running — nothing to restart");
     return;
   }
-  try {
-    process.kill(pid, "SIGTERM");
-    console.error(`[prism-daemon] Sent SIGTERM to daemon pid ${pid}`);
-  } catch (err) {
-    console.error(`[prism-daemon] Failed to signal pid ${pid}: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  console.error("[prism-daemon] Sent shutdown request to the running daemon over its socket");
 }
 
 async function runPruneZeroSdm(): Promise<void> {
@@ -52,7 +53,7 @@ async function main(): Promise<void> {
   const subcommand = process.argv[2];
   switch (subcommand) {
     case "restart":
-      runRestart();
+      await runRestart();
       process.exit(0);
       return;
     case "prune-zero-sdm":

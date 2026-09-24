@@ -1429,7 +1429,7 @@ self.addEventListener('message', (e) => {
         reject(err);
       };
       httpServer.on("error", onError);
-      httpServer.listen(port, () => {
+      httpServer.listen(port, "127.0.0.1", () => {
         httpServer.removeListener("error", onError);
         // Re-register a permanent error handler for runtime errors
         httpServer.on("error", (err: NodeJS.ErrnoException) => {
