@@ -39,6 +39,30 @@ describe("session_save_ledger idempotent id (M3)", () => {
     expect(entries.length).toBe(1);
   });
 
+  it("a repeated idempotencyKey with different content returns an error instead of the stale row", async () => {
+    const project = `m3-idempotency-${randomUUID()}`;
+    const idempotencyKey = `m3-test-diff:${randomUUID()}`;
+
+    const first = await runWithRequestContext({ idempotencyKey }, () =>
+      sessionSaveLedgerHandler({ project, conversation_id: "conv-m3-diff", summary: "Original summary" })
+    );
+    expect(first.isError).toBeFalsy();
+
+    const second = await runWithRequestContext({ idempotencyKey }, () =>
+      sessionSaveLedgerHandler({ project, conversation_id: "conv-m3-diff", summary: "Different summary" })
+    );
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toContain("different content");
+
+    const storage = await getStorage();
+    const entries = await storage.getLedgerEntries({
+      project: `eq.${project}`,
+      conversation_id: "eq.conv-m3-diff",
+    } as any);
+    expect(entries.length).toBe(1);
+    expect((entries[0] as any).summary).toBe("Original summary");
+  });
+
   it("a different idempotencyKey for the same args produces a different row", async () => {
     const project = `m3-idempotency-${randomUUID()}`;
     const args = { project, conversation_id: "conv-m3b", summary: "M3 distinct keys" };

@@ -1,8 +1,12 @@
 import { getStorage } from "../storage/index.js";
 import { getSetting, setSetting } from "../storage/configStorage.js";
 import { debugLog } from "../utils/logger.js";
-import { getLLMProvider } from "../utils/llm/factory.js";
-import { findLedgerEntriesMissingEmbeddings, computeLedgerEmbeddingText } from "../tools/hygieneHandlers.js";
+import {
+  findLedgerEntriesMissingEmbeddings,
+  computeLedgerEmbeddingText,
+  computeDirectSaveEmbeddingText,
+  generateAndPatchLedgerEmbedding,
+} from "../tools/hygieneHandlers.js";
 import { runOutsideRequestContext } from "../utils/requestContext.js";
 import { PRISM_USER_ID } from "../config.js";
 
@@ -25,7 +29,7 @@ async function embedLedgerJobHandler(payloadJson: string): Promise<void> {
   const rows = await storage.getLedgerEntries({
     id: `eq.${entryId}`,
     user_id: `eq.${PRISM_USER_ID}`,
-    select: "id,summary,decisions,archived_at,deleted_at",
+    select: "id,summary,decisions,conversation_id,archived_at,deleted_at",
     limit: "1",
   });
   const row = rows[0] as any;
@@ -34,33 +38,13 @@ async function embedLedgerJobHandler(payloadJson: string): Promise<void> {
     return;
   }
 
-  const text = computeLedgerEmbeddingText(row);
+  const text = computeDirectSaveEmbeddingText(row);
   if (!text.trim()) {
     debugLog(`[JobWorker] embed_ledger: entry ${entryId} has no embeddable text — skipping (job counted as complete)`);
     return;
   }
 
-  const embedding = await getLLMProvider().generateEmbedding(text);
-
-  const patchData: Record<string, unknown> = {
-    embedding: JSON.stringify(embedding),
-  };
-
-  try {
-    const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
-    const compressor = getDefaultCompressor();
-    const compressed = compressor.compress(embedding);
-    const buf = serialize(compressed);
-
-    patchData.embedding_compressed = buf.toString("base64");
-    patchData.embedding_format = `turbo${compressor.bits}`;
-    patchData.embedding_turbo_radius = compressed.radius;
-    debugLog(`[JobWorker] embed_ledger: TurboQuant compressed ${buf.length} bytes for entry ${entryId}`);
-  } catch (turboErr: any) {
-    console.error(`[JobWorker] embed_ledger: TurboQuant compression failed for entry ${entryId} (non-fatal): ${turboErr.message}`);
-  }
-
-  await storage.patchLedger(entryId, patchData);
+  await generateAndPatchLedgerEmbedding(storage, entryId, text);
   debugLog(`[JobWorker] embed_ledger: embedding saved for entry ${entryId}`);
 }
 
@@ -142,7 +126,7 @@ async function processOneJob(): Promise<boolean> {
 
   try {
     await handler(job.payload);
-    await storage.completeJob(job.id);
+    await storage.deleteJob(job.id);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const backoffMs = Math.pow(2, job.attempts) * BACKOFF_BASE_MS;
@@ -190,8 +174,13 @@ export interface StartJobWorkerOptions {
 
 export async function startJobWorker(options: StartJobWorkerOptions = {}): Promise<void> {
   currentPollMs = options.pollMs ?? 2000;
-  stopped = false;
   const storage = await getStorage();
+  if (!storage.supportsJobQueue) {
+    stopped = true;
+    debugLog("[JobWorker] Storage backend has no durable job queue — skipping startup recovery sweep and polling");
+    return;
+  }
+  stopped = false;
   const resetCount = await storage.resetDeadJobs();
   if (resetCount > 0) {
     debugLog(`[JobWorker] Reset ${resetCount} dead job(s) (attempts>=5) for one more cycle`);
@@ -211,15 +200,21 @@ export function kickJobWorker(): void {
   }
 }
 
-export async function stopJobWorker(): Promise<void> {
+const STOP_WAIT_MS = 5000;
+
+export async function stopJobWorker(waitMs: number = STOP_WAIT_MS): Promise<void> {
   stopped = true;
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
   if (processingLoop) {
+    const timeout = new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, waitMs);
+      timer.unref?.();
+    });
     try {
-      await processingLoop;
+      await Promise.race([processingLoop, timeout]);
     } catch (err) {
       debugLog(`[JobWorker] stopJobWorker: pending poll cycle rejected (ignored): ${err instanceof Error ? err.message : String(err)}`);
     }

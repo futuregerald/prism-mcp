@@ -120,6 +120,42 @@ export function computeLedgerEmbeddingText(entry: { summary?: string; decisions?
   ].filter(Boolean).join(" | ");
 }
 
+export function computeDirectSaveEmbeddingText(entry: { summary?: string; decisions?: string[]; conversation_id?: string }): string {
+  if (entry.conversation_id === "experience-event") {
+    return entry.summary || "";
+  }
+  return [entry.summary || "", ...(entry.decisions || [])].join("\n");
+}
+
+export async function generateAndPatchLedgerEmbedding(
+  storage: Awaited<ReturnType<typeof getStorage>>,
+  entryId: string,
+  embeddingText: string
+): Promise<void> {
+  if (!embeddingText.trim()) return;
+
+  const embedding = await getLLMProvider().generateEmbedding(embeddingText);
+
+  const patchData: Record<string, unknown> = {
+    embedding: JSON.stringify(embedding),
+  };
+
+  try {
+    const { getDefaultCompressor, serialize } = await import("../utils/turboquant.js");
+    const compressor = getDefaultCompressor();
+    const compressed = compressor.compress(embedding);
+    const buf = serialize(compressed);
+
+    patchData.embedding_compressed = buf.toString("base64");
+    patchData.embedding_format = `turbo${compressor.bits}`;
+    patchData.embedding_turbo_radius = compressed.radius;
+  } catch (turboErr: any) {
+    console.error(`[embedding] TurboQuant compression failed for entry ${entryId} (non-fatal): ${turboErr.message}`);
+  }
+
+  await storage.patchLedger(entryId, patchData);
+}
+
 export async function backfillEmbeddingsHandler(args: unknown) {
   if (!isBackfillEmbeddingsArgs(args)) {
     throw new Error("Invalid arguments for session_backfill_embeddings");

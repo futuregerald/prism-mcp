@@ -59,6 +59,7 @@ function isAllZero(state: Float32Array): boolean {
 }
 
 export class SqliteStorage implements StorageBackend {
+  readonly supportsJobQueue = true;
   private db!: Client;
   private dbPath!: string;
   private accessLogBuffer!: AccessLogBuffer;
@@ -802,39 +803,17 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
-    const requestLogInfo = await this.db.execute(`PRAGMA table_info(prism_request_log)`);
-    const requestLogCols = new Set(requestLogInfo.rows.map(row => String(row.name)));
-    if (requestLogCols.size > 0 && !requestLogCols.has("args_hash")) {
-      await this.db.execute(`ALTER TABLE prism_request_log RENAME TO prism_request_log_pre_b1`);
-      await this.db.execute(`
-        CREATE TABLE prism_request_log (
-          key TEXT PRIMARY KEY,
-          args_hash TEXT NOT NULL,
-          status TEXT NOT NULL,
-          owner TEXT NOT NULL,
-          response TEXT,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      `);
-      await this.db.execute(`
-        INSERT INTO prism_request_log (key, args_hash, status, owner, response, created_at, updated_at)
-        SELECT key, '', 'done', '', response, created_at, created_at FROM prism_request_log_pre_b1
-      `);
-      await this.db.execute(`DROP TABLE prism_request_log_pre_b1`);
-    } else {
-      await this.db.execute(`
-        CREATE TABLE IF NOT EXISTS prism_request_log (
-          key TEXT PRIMARY KEY,
-          args_hash TEXT NOT NULL,
-          status TEXT NOT NULL,
-          owner TEXT NOT NULL,
-          response TEXT,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      `);
-    }
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS prism_request_log (
+        key TEXT PRIMARY KEY,
+        args_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        response TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_prism_request_log_created_at ON prism_request_log(created_at)`
     );
@@ -850,7 +829,6 @@ export class SqliteStorage implements StorageBackend {
         created_at INTEGER NOT NULL
       )
     `);
-    await this.db.execute(`DROP INDEX IF EXISTS idx_prism_jobs_run_after`);
     await this.db.execute(
       `CREATE INDEX IF NOT EXISTS idx_prism_jobs_run_after_active ON prism_jobs(run_after) WHERE attempts < 5`
     );
@@ -2959,7 +2937,7 @@ export class SqliteStorage implements StorageBackend {
   async pruneRequestLog(olderThanMs: number): Promise<void> {
     const cutoff = Date.now() - olderThanMs;
     await this.db.execute({
-      sql: `DELETE FROM prism_request_log WHERE created_at <= ?`,
+      sql: `DELETE FROM prism_request_log WHERE status = 'done' AND updated_at <= ?`,
       args: [cutoff],
     });
   }
@@ -2999,13 +2977,6 @@ export class SqliteStorage implements StorageBackend {
     };
   }
 
-  async completeJob(id: string): Promise<void> {
-    await this.db.execute({
-      sql: `DELETE FROM prism_jobs WHERE id = ?`,
-      args: [id],
-    });
-  }
-
   async deleteJob(id: string): Promise<void> {
     await this.db.execute({
       sql: `DELETE FROM prism_jobs WHERE id = ?`,
@@ -3015,8 +2986,8 @@ export class SqliteStorage implements StorageBackend {
 
   async purgeRequestLogEntriesContaining(needle: string): Promise<void> {
     await this.db.execute({
-      sql: `DELETE FROM prism_request_log WHERE response LIKE ?`,
-      args: [`%${needle}%`],
+      sql: `DELETE FROM prism_request_log WHERE status = 'done' AND instr(response, ?) > 0`,
+      args: [needle],
     });
   }
 

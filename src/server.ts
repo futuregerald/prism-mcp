@@ -321,6 +321,12 @@ export function beginRejectingNewToolCalls(): void {
   rejectingNewToolCalls = true;
 }
 
+let holdToolCallsDuringShutdown = false;
+
+export function holdNewToolCallsUnansweredDuringShutdown(): void {
+  holdToolCallsDuringShutdown = true;
+}
+
 // ─── v5.2.1: Deferred Auto-Push Tracking ─────────────────────
 // Tracks whether any client has already called session_load_context.
 // Used by the deferred auto-push to skip redundant context injection.
@@ -747,6 +753,9 @@ export function createServer() {
     const { name, arguments: args } = request.params;
 
     if (rejectingNewToolCalls) {
+      if (holdToolCallsDuringShutdown) {
+        return new Promise<never>(() => { });
+      }
       return {
         content: [{ type: "text", text: "prism daemon is shutting down" }],
         isError: true,

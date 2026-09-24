@@ -23,7 +23,7 @@ describe("daemon rejects new tool calls once shutdown begins (B9)", () => {
     proc = undefined;
   });
 
-  it("a tools/call sent after SIGTERM but before exit returns an isError result, not a hang", async () => {
+  it("a tools/call sent after SIGTERM is held unanswered and its connection closes only after in-flight calls finish", async () => {
     ensureDaemonBuilt();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "prd-b9-"));
     const dataDir = home;
@@ -58,24 +58,29 @@ describe("daemon rejects new tool calls once shutdown begins (B9)", () => {
     proc.kill("SIGTERM");
     await new Promise(resolve => setTimeout(resolve, 100));
 
+    const events: string[] = [];
+    const lateClosed = new Promise<void>(resolve => {
+      lateClient.socket.once("close", () => { events.push("late-closed"); resolve(); });
+    });
+    const inFlightResponsePromise = blockerClient.waitFor(50, 15_000).then(r => { events.push("in-flight-answered"); return r; });
+
     lateClient.send({
       jsonrpc: "2.0",
       id: 51,
       method: "tools/call",
       params: {
         name: "session_save_ledger",
-        arguments: { project: "b9-shutdown", conversation_id: "conv-b9-late", summary: "should be rejected" },
+        arguments: { project: "b9-shutdown", conversation_id: "conv-b9-late", summary: "should be dropped, not errored" },
       },
     });
 
-    const lateResponse = await lateClient.waitFor(51, 15_000);
-    expect(lateResponse.result.isError).toBe(true);
-    expect(lateResponse.result.content[0].text).toContain("shutting down");
+    await lateClosed;
+    expect(lateClient.notifications.find((n: any) => n.id === 51)).toBeUndefined();
 
-    const inFlightResponse = await blockerClient.waitFor(50, 15_000);
+    const inFlightResponse = await inFlightResponsePromise;
     expect(inFlightResponse.result.isError).toBeFalsy();
+    expect(events).toEqual(["in-flight-answered", "late-closed"]);
 
     blockerClient.close();
-    lateClient.close();
   }, 30_000);
 });

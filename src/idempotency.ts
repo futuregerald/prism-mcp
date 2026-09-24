@@ -50,7 +50,21 @@ export interface IdempotencyStorage {
 
 const POLL_INTERVAL_MS = 100;
 const POLL_MAX_MS = 30_000;
+const SAME_OWNER_POLL_MAX_MS = 10 * 60 * 1000;
 const NULL_ROW_RETRY_MAX = 300;
+
+let pollMaxMsOverride: number | undefined;
+let sameOwnerPollMaxMsOverride: number | undefined;
+
+export function _setPollCapsForTest(pollMaxMs: number, sameOwnerPollMaxMs: number): void {
+  pollMaxMsOverride = pollMaxMs;
+  sameOwnerPollMaxMsOverride = sameOwnerPollMaxMs;
+}
+
+export function _resetPollCapsForTest(): void {
+  pollMaxMsOverride = undefined;
+  sameOwnerPollMaxMsOverride = undefined;
+}
 
 type PollOutcome =
   | { kind: "done"; response: string | null }
@@ -61,8 +75,11 @@ async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function pollUntilDone(storage: IdempotencyStorage, key: string): Promise<PollOutcome> {
-  const deadline = Date.now() + POLL_MAX_MS;
+async function pollUntilDone(storage: IdempotencyStorage, key: string, sameOwner: boolean): Promise<PollOutcome> {
+  const capMs = sameOwner
+    ? (sameOwnerPollMaxMsOverride ?? SAME_OWNER_POLL_MAX_MS)
+    : (pollMaxMsOverride ?? POLL_MAX_MS);
+  const deadline = Date.now() + capMs;
   while (Date.now() < deadline) {
     const row = await storage.getRequestLogRow(key);
     if (!row) return { kind: "gone" };
@@ -127,7 +144,8 @@ export async function runIdempotent(
       if (reclaimed) return runAndFinalize();
     }
 
-    const outcome = await pollUntilDone(storage, key);
+    const sameOwner = row.owner === owner;
+    const outcome = await pollUntilDone(storage, key, sameOwner);
     if (outcome.kind === "done") return JSON.parse(outcome.response ?? "null");
     if (outcome.kind === "timeout") {
       return idempotencyErrorResult("request with this idempotency key is still in progress");
