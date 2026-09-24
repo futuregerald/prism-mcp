@@ -1058,6 +1058,10 @@ export class SupabaseStorage implements StorageBackend {
     );
   }
 
+  async pruneZeroSdmState(): Promise<{ pruned: string[] }> {
+    return { pruned: [] };
+  }
+
   // ─── HDC Dictionary (Concept Vectors) ───────────────────────────
   //
   // The hdc_dictionary table stores 768-word Uint32Array concept vectors

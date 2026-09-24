@@ -33,6 +33,7 @@ import {
   TEST_USER_ID,
   SAMPLE_SETTINGS,
 } from "../helpers/fixtures.js";
+import { SparseDistributedMemory, SDM_ADDRESS_VERSION } from "../../src/sdm/sdmEngine.js";
 
 // ─── Shared test state ───────────────────────────────────────────
 // The storage instance and cleanup function are created once per
@@ -614,5 +615,63 @@ describe("Dark Factory Pipelines & Verification Harness", () => {
     // Assert our run appears in the list rather than requiring exactly 1 row.
     expect(list.length).toBeGreaterThanOrEqual(1);
     expect(list.some((r: any) => r.id === VR_ID)).toBe(true);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SDM PERSISTENCE (Phase 1 — shared daemon spike)
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("SDM Persistence", () => {
+    it("saveSdmState skips the DB write when every counter is 0", async () => {
+      const project = "sdm-persist-all-zero";
+      const zeroState = new SparseDistributedMemory().exportState();
+
+      await storage.saveSdmState(project, zeroState);
+
+      const loaded = await storage.loadSdmState(project);
+      expect(loaded).toBeNull();
+    }, 20_000);
+
+    it("saveSdmState persists a non-zero counter matrix", async () => {
+      const project = "sdm-persist-non-zero";
+      const sdm = new SparseDistributedMemory();
+      const vector = new Float32Array(768);
+      vector[0] = 0.5;
+      sdm.write(vector);
+      const state = sdm.exportState();
+
+      await storage.saveSdmState(project, state);
+
+      const loaded = await storage.loadSdmState(project);
+      expect(loaded).not.toBeNull();
+      expect(loaded.length).toBe(state.length);
+      expect(Array.from(loaded as Float32Array)).toEqual(Array.from(state));
+    }, 20_000);
+
+    it("pruneZeroSdmState deletes only rows that are proven all-zero", async () => {
+      const zeroProject = "sdm-prune-zero";
+      const nonZeroProject = "sdm-prune-non-zero";
+
+      const zeroState = new SparseDistributedMemory().exportState();
+      const zeroBuffer = new Uint8Array(zeroState.buffer, zeroState.byteOffset, zeroState.byteLength);
+      await (storage as any).db.execute({
+        sql: `INSERT INTO sdm_state (project, counters, address_version, updated_at)
+              VALUES (?, ?, ?, datetime('now'))`,
+        args: [zeroProject, zeroBuffer, SDM_ADDRESS_VERSION],
+      });
+
+      const sdm = new SparseDistributedMemory();
+      const vector = new Float32Array(768);
+      vector[1] = 1.0;
+      sdm.write(vector);
+      await storage.saveSdmState(nonZeroProject, sdm.exportState());
+
+      const result = await storage.pruneZeroSdmState();
+
+      expect(result.pruned).toContain(zeroProject);
+      expect(result.pruned).not.toContain(nonZeroProject);
+      expect(await storage.loadSdmState(zeroProject)).toBeNull();
+      expect(await storage.loadSdmState(nonZeroProject)).not.toBeNull();
+    }, 20_000);
   });
 });

@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { redactSettings, toMarkdown } from "./commonHelpers.js";
 import * as fflate from "fflate";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
+import { getPrismDataDir } from "../utils/dataDir.js";
 /**
  * Session Memory Handlers (v2.0 — StorageBackend Refactor)
  *
@@ -727,7 +727,7 @@ export async function sessionLoadContextHandler(args: unknown) {
       // When using Supabase as primary, local SQLite being stale is expected.
       // Only warn if local is NEWER (data loss risk). If local is older, that's
       // normal — cloud is authoritative.
-      const dbPath = nodePath.join(os.homedir(), ".prism-mcp", "data.db");
+      const dbPath = nodePath.join(getPrismDataDir(), "data.db");
       if (fs.existsSync(dbPath)) {
         let altClient: any = null;
         try {
@@ -955,11 +955,12 @@ export async function sessionLoadContextHandler(args: unknown) {
         const queryVector = await getLLMProvider().generateEmbedding(activeText);
 
         // Lazy-load to avoid blocking server boot
-        const { getSdmEngine } = await import("../sdm/sdmEngine.js");
+        const { getSdmEngine, hasSdmEngine } = await import("../sdm/sdmEngine.js");
         const { decodeSdmVector } = await import("../sdm/sdmDecoder.js");
 
-        const sdmEngine = getSdmEngine(project);
-        const targetVector = sdmEngine.read(new Float32Array(queryVector));
+        const targetVector = hasSdmEngine(project)
+          ? getSdmEngine(project).read(new Float32Array(queryVector))
+          : new Float32Array(queryVector.length);
 
         const topMatches = await decodeSdmVector(project, targetVector, 3, 0.55);
         if (topMatches.length > 0) {
@@ -1176,7 +1177,7 @@ export async function sessionSaveImageHandler(args: unknown) {
   }
 
   // Setup media vault directory
-  const mediaDir = nodePath.join(os.homedir(), ".prism-mcp", "media", project);
+  const mediaDir = nodePath.join(getPrismDataDir(), "media", project);
   if (!fs.existsSync(mediaDir)) {
     fs.mkdirSync(mediaDir, { recursive: true });
   }
@@ -1279,7 +1280,7 @@ export async function sessionViewImageHandler(args: unknown) {
     };
   }
 
-  const vaultPath = nodePath.join(os.homedir(), ".prism-mcp", "media", project, imgMeta.filename);
+  const vaultPath = nodePath.join(getPrismDataDir(), "media", project, imgMeta.filename);
   if (!fs.existsSync(vaultPath)) {
     return {
       content: [{

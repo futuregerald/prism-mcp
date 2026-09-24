@@ -19,10 +19,10 @@
 import { createClient, type Client, type InValue } from "@libsql/client";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 import { randomUUID } from "crypto";
 import { AccessLogBuffer } from "../utils/accessLogBuffer.js";
-import { PRISM_ACTR_BUFFER_FLUSH_MS } from "../config.js";
+import { getPrismDataDir } from "../utils/dataDir.js";
+import { PRISM_ACTR_BUFFER_FLUSH_MS, PRISM_ACTR_WRITE_THROUGH } from "../config.js";
 import { getSetting as cfgGet, setSetting as cfgSet, getAllSettings as cfgGetAll } from "./configStorage.js";
 
 import type {
@@ -48,6 +48,13 @@ import type {
 import { debugLog } from "../utils/logger.js";
 import { getSdmEngine } from "../sdm/sdmEngine.js";
 import { SafetyController } from "../darkfactory/safetyController.js";
+
+function isAllZero(state: Float32Array): boolean {
+  for (let i = 0; i < state.length; i++) {
+    if (state[i] !== 0) return false;
+  }
+  return true;
+}
 
 export class SqliteStorage implements StorageBackend {
   private db!: Client;
@@ -76,11 +83,7 @@ export class SqliteStorage implements StorageBackend {
       const dir = path.dirname(resolvedPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     } else {
-      const prismDir = path.join(os.homedir(), ".prism-mcp");
-      if (!fs.existsSync(prismDir)) {
-        fs.mkdirSync(prismDir, { recursive: true });
-      }
-      resolvedPath = path.join(prismDir, "data.db");
+      resolvedPath = path.join(getPrismDataDir(), "data.db");
     }
 
     this.dbPath = resolvedPath;
@@ -91,6 +94,8 @@ export class SqliteStorage implements StorageBackend {
 
     // Enable WAL mode for better concurrent read performance
     await this.db.execute("PRAGMA journal_mode=WAL");
+    await this.db.execute("PRAGMA synchronous=FULL");
+    await this.db.execute("PRAGMA busy_timeout=5000");
 
     // v6.0: Enable foreign key enforcement — required for ON DELETE CASCADE
     // in memory_links table. Without this, CASCADE is silently ignored.
@@ -102,7 +107,9 @@ export class SqliteStorage implements StorageBackend {
     // v7.0: Initialize the ACT-R access log write buffer.
     // The buffer batches logAccess() calls into periodic single-INSERT flushes
     // to prevent SQLite SQLITE_BUSY contention (Rule #1).
-    this.accessLogBuffer = new AccessLogBuffer(this.db, PRISM_ACTR_BUFFER_FLUSH_MS);
+    this.accessLogBuffer = new AccessLogBuffer(this.db, PRISM_ACTR_BUFFER_FLUSH_MS, {
+      writeThrough: PRISM_ACTR_WRITE_THROUGH,
+    });
 
     debugLog(`[SqliteStorage] Initialized at ${this.dbPath}`);
   }
@@ -2788,11 +2795,16 @@ export class SqliteStorage implements StorageBackend {
   }
 
   async saveSdmState(project: string, state: Float32Array): Promise<void> {
+    if (isAllZero(state)) {
+      debugLog(`[SqliteStorage] Skipping SDM state write for "${project}": all counters are 0`);
+      return;
+    }
+
     // The state is a Float32Array. We need its underlying buffer for SQLite.
     // Wrap in Uint8Array to satisfy @libsql/client InValue typing which rejects SharedArrayBuffer
     const buffer = new Uint8Array(state.buffer, state.byteOffset, state.byteLength);
     const { SDM_ADDRESS_VERSION } = await import('../sdm/sdmEngine.js');
-    
+
     // We do an UPSERT (INSERT ... ON CONFLICT REPLACE).
     await this.db.execute({
       sql: `INSERT INTO sdm_state (project, counters, address_version, updated_at) 
@@ -2805,6 +2817,35 @@ export class SqliteStorage implements StorageBackend {
     });
     
     debugLog(`[SqliteStorage] Persisted SDM state v${SDM_ADDRESS_VERSION} to disk for project: ${project}`);
+  }
+
+  async pruneZeroSdmState(): Promise<{ pruned: string[] }> {
+    const result = await this.db.execute(`SELECT project, counters FROM sdm_state`);
+    const pruned: string[] = [];
+
+    for (const row of result.rows) {
+      const project = row.project as string;
+      const blob = row.counters as any;
+      let counters: Float32Array;
+      if (blob instanceof ArrayBuffer) {
+        counters = new Float32Array(blob);
+      } else if (blob instanceof Uint8Array) {
+        counters = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+      } else {
+        continue;
+      }
+
+      if (isAllZero(counters)) {
+        await this.db.execute({ sql: `DELETE FROM sdm_state WHERE project = ?`, args: [project] });
+        pruned.push(project);
+      }
+    }
+
+    if (pruned.length > 0) {
+      debugLog(`[SqliteStorage] pruneZeroSdmState: removed ${pruned.length} all-zero project(s): ${pruned.join(", ")}`);
+    }
+
+    return { pruned };
   }
 
   // ─── v6.5: HDC State Machines & Cognitive Logic ───────────────────────

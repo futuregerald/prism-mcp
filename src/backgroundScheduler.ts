@@ -593,6 +593,7 @@ export async function runSchedulerSweep(
       for (const project of activeProjects) {
         try {
           const sdm = getSdmEngine(project);
+          if (!sdm.hasWrites) continue;
           const state = sdm.exportState();
           await storage.saveSdmState(project, state);
           result.tasks.sdmFlush.projectsFlushed++;

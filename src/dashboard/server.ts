@@ -33,6 +33,7 @@ import { compactLedgerHandler } from "../tools/compactionHandler.js";
 import { getLLMProvider } from "../utils/llm/factory.js";
 import { buildVaultDirectory } from "../utils/vaultExporter.js";
 import { redactSettings } from "../tools/commonHelpers.js";
+import { getPrismDataDir } from "../utils/dataDir.js";
 import { handleGraphRoutes } from "./graphRouter.js";
 import {
   safeCompare,
@@ -1467,7 +1468,7 @@ self.addEventListener('message', (e) => {
 
   // Write the active port to a file for discoverability
   try {
-    const portFile = path.join(os.homedir(), ".prism-mcp", "dashboard.port");
+    const portFile = path.join(getPrismDataDir(), "dashboard.port");
     fs.writeFileSync(portFile, String(boundPort), "utf8");
   } catch {
     // Non-fatal — just means the user has to know the port

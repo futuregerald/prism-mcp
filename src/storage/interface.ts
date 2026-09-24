@@ -631,6 +631,8 @@ export interface StorageBackend {
    */
   saveSdmState(project: string, state: Float32Array): Promise<void>;
 
+  pruneZeroSdmState(): Promise<{ pruned: string[] }>;
+
   /**
    * Fetch all compressed embeddings for a project to enable fast JS-space Hamming scanning.
    * Returns id, summary, and the base64 encoded embedding_compressed BLOB.

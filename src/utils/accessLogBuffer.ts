@@ -54,18 +54,25 @@ interface BufferDatabase {
   execute(query: { sql: string; args: Array<string | number | bigint | ArrayBuffer | null> }): Promise<unknown>;
 }
 
+export interface AccessLogBufferOptions {
+  writeThrough?: boolean;
+}
+
 export class AccessLogBuffer {
   private buffer: BufferedAccess[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private db: BufferDatabase;
   private disposed = false;
+  private writeThrough: boolean;
+  private pending = new Set<Promise<unknown>>();
 
   /**
    * @param db - Database connection for flushing (injected for testability)
    * @param flushIntervalMs - How often to flush (default: 5000ms)
    */
-  constructor(db: BufferDatabase, flushIntervalMs: number = 5000) {
+  constructor(db: BufferDatabase, flushIntervalMs: number = 5000, options: AccessLogBufferOptions = {}) {
     this.db = db;
+    this.writeThrough = options.writeThrough ?? false;
 
     // Only start the timer if a positive interval is given.
     // Tests may pass 0 to disable auto-flush and control it manually.
@@ -97,11 +104,27 @@ export class AccessLogBuffer {
   push(entryId: string, contextHash?: string): void {
     if (this.disposed) return;
 
-    this.buffer.push({
+    const event: BufferedAccess = {
       entryId,
       contextHash: contextHash || null,
       timestamp: new Date().toISOString(),
-    });
+    };
+
+    if (this.writeThrough) {
+      const insert = this.db.execute({
+        sql: `INSERT INTO memory_access_log (entry_id, accessed_at, context_hash) VALUES (?, ?, ?)`,
+        args: [event.entryId, event.timestamp, event.contextHash],
+      }).catch(err => {
+        debugLog(
+          `[AccessLogBuffer] Write-through insert failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+      this.pending.add(insert);
+      insert.finally(() => this.pending.delete(insert));
+      return;
+    }
+
+    this.buffer.push(event);
   }
 
   /**
@@ -186,6 +209,8 @@ export class AccessLogBuffer {
 
     // Final flush to drain any remaining events
     await this.flush();
+
+    await Promise.allSettled(Array.from(this.pending));
 
     debugLog("[AccessLogBuffer] Disposed");
   }

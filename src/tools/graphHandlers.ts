@@ -105,7 +105,7 @@ import {
 import { HdcStateMachine } from "../sdm/stateMachine.js";
 import { ConceptDictionary } from "../sdm/conceptDictionary.js";
 import { PolicyGateway } from "../sdm/policyGateway.js";
-import { getSdmEngine } from "../sdm/sdmEngine.js";
+import { getSdmEngine, hasSdmEngine } from "../sdm/sdmEngine.js";
 import {
   PRISM_HDC_ENABLED,
   PRISM_HDC_EXPLAINABILITY_ENABLED,
@@ -954,8 +954,9 @@ export async function sessionIntuitiveRecallHandler(
     const { decodeSdmVector } = await import("../sdm/sdmDecoder.js");
 
     const queryVector = await getLLMProvider().generateEmbedding(args.query);
-    const sdmEngine = getSdmEngine(args.project);
-    const targetVector = sdmEngine.read(new Float32Array(queryVector));
+    const targetVector = hasSdmEngine(args.project)
+      ? getSdmEngine(args.project).read(new Float32Array(queryVector))
+      : new Float32Array(queryVector.length);
 
     const limit = args.limit ?? 3;
     const threshold = args.threshold ?? 0.55;

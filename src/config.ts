@@ -351,6 +351,8 @@ export const PRISM_ACTR_BUFFER_FLUSH_MS = parseInt(
   process.env.PRISM_ACTR_BUFFER_FLUSH_MS || "5000", 10
 );
 
+export const PRISM_ACTR_WRITE_THROUGH = process.env.PRISM_ACTR_WRITE_THROUGH === "true";
+
 /** Days to retain access log entries before pruning. (Default: 90) */
 export const PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS = parseInt(
   process.env.PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS || "90", 10

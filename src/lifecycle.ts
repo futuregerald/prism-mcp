@@ -8,13 +8,11 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 import { execFileSync } from "child_process";
 import { closeConfigStorage } from "./storage/configStorage.js";
 import { getStorage } from "./storage/index.js";
 import { shutdownTelemetry } from "./utils/telemetry.js";
-
-const PRISM_DIR = path.join(os.homedir(), ".prism-mcp");
+import { getPrismDataDir } from "./utils/dataDir.js";
 
 /**
  * Instance-aware PID file.
@@ -23,7 +21,10 @@ const PRISM_DIR = path.join(os.homedir(), ".prism-mcp");
  * Each instance gets its own PID file to prevent lock conflicts.
  */
 const INSTANCE_NAME = process.env.PRISM_INSTANCE || "default";
-const PID_FILE = path.join(PRISM_DIR, `server-${INSTANCE_NAME}.pid`);
+
+function getPidFile(): string {
+  return path.join(getPrismDataDir(), `server-${INSTANCE_NAME}.pid`);
+}
 
 function log(msg: string) {
   console.error(`[Prism Lifecycle] ${msg}`);
@@ -104,13 +105,11 @@ export function acquireLock() {
     return;
   }
 
-  if (!fs.existsSync(PRISM_DIR)) {
-    fs.mkdirSync(PRISM_DIR, { recursive: true });
-  }
+  const pidFile = getPidFile();
 
-  if (fs.existsSync(PID_FILE)) {
+  if (fs.existsSync(pidFile)) {
     try {
-      const oldPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+      const oldPid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
       
       if (oldPid && oldPid !== process.pid) {
         let isAlive = false;
@@ -151,7 +150,7 @@ export function acquireLock() {
 
   // Claim the lock for this process
   try {
-    fs.writeFileSync(PID_FILE, process.pid.toString(), "utf8");
+    fs.writeFileSync(pidFile, process.pid.toString(), "utf8");
     log(`Acquired singleton lock (PID ${process.pid})`);
   } catch (err) {
     log(`Warning: Failed to write PID file: ${err instanceof Error ? err.message : String(err)}`);
@@ -198,8 +197,7 @@ export function registerShutdownHandlers() {
           for (const project of sdmProjects) {
             try {
               const sdm = getSdmEngine(project);
-              // Ensure we aren't saving an empty state unnecessarily if possible, 
-              // but UPSERT handles it cleanly regardless.
+              if (!sdm.hasWrites) continue;
               const state = sdm.exportState();
               await storage.saveSdmState(project, state);
             } catch (err) {
@@ -220,11 +218,12 @@ export function registerShutdownHandlers() {
       }
 
       // 3. Remove PID lockfile (only if WE own it)
-      if (fs.existsSync(PID_FILE)) {
+      const pidFile = getPidFile();
+      if (fs.existsSync(pidFile)) {
         try {
-          const storedPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+          const storedPid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
           if (storedPid === process.pid) {
-            fs.unlinkSync(PID_FILE);
+            fs.unlinkSync(pidFile);
           }
         } catch {
           // Ignore read errors during shutdown
