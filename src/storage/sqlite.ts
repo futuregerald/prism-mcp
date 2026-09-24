@@ -803,6 +803,14 @@ export class SqliteStorage implements StorageBackend {
       `CREATE INDEX IF NOT EXISTS idx_verification_runs_user ON verification_runs(user_id, project)`
     );
 
+    const requestLogColumns = await this.db.execute("PRAGMA table_info(prism_request_log)");
+    const requestLogIsEarlyLayout =
+      requestLogColumns.rows.length > 0 &&
+      !requestLogColumns.rows.some(r => (r as unknown as { name: string }).name === "args_hash");
+    if (requestLogIsEarlyLayout) {
+      await this.db.execute("DROP TABLE IF EXISTS prism_request_log");
+    }
+
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS prism_request_log (
         key TEXT PRIMARY KEY,
