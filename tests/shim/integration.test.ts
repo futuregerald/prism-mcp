@@ -12,6 +12,7 @@ import {
   pidIsAlive,
   terminatePid,
   killProc,
+  terminateAllDaemonsForCreatedDataDirs,
   waitFor,
   type NdjsonClient,
 } from "./helpers.js";
@@ -48,6 +49,7 @@ afterEach(async () => {
     await terminatePid(pid);
   }
   spawnedDaemonPids.clear();
+  await terminateAllDaemonsForCreatedDataDirs();
 });
 
 describe("shim + daemon integration", () => {

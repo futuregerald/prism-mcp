@@ -49,21 +49,43 @@ function writeToSocket(socket: net.Socket, line: string): void {
   }
 }
 
-const SPAWN_WINDOW_MS = 5000;
+const DAEMON_BOOT_GRACE_MS = 3000;
+const SPAWN_CLAIM_TTL_MS = 10000;
 
-function claimSpawnWindow(spawnMarkerPath: string, nowMs: number = Date.now()): boolean {
-  const window = Math.floor(nowMs / SPAWN_WINDOW_MS);
-  const claimPath = `${spawnMarkerPath}.${window}`;
+function readDaemonLock(dataDir: string): { pid: number; startedAt: number } | null {
   try {
-    fs.closeSync(fs.openSync(claimPath, "wx"));
-  } catch {
-    return false;
-  }
-  removeStaleSpawnClaims(spawnMarkerPath, window);
-  return true;
+    const parsed = JSON.parse(fs.readFileSync(path.join(dataDir, "prismd.lock"), "utf8"));
+    if (typeof parsed?.pid === "number" && typeof parsed?.startedAt === "number") return parsed;
+  } catch { }
+  return null;
 }
 
-function removeStaleSpawnClaims(spawnMarkerPath: string, currentWindow: number): void {
+function spawnClaimKey(dataDir: string, nowMs: number): string | null {
+  const lock = readDaemonLock(dataDir);
+  if (!lock) return "none";
+  if (nowMs - lock.startedAt < DAEMON_BOOT_GRACE_MS) return null;
+  return `${lock.pid}-${lock.startedAt}`;
+}
+
+function claimSpawn(spawnMarkerPath: string, key: string, nowMs: number): boolean {
+  const claimPath = `${spawnMarkerPath}.${key}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.closeSync(fs.openSync(claimPath, "wx"));
+      return true;
+    } catch {
+      try {
+        if (nowMs - fs.statSync(claimPath).mtimeMs < SPAWN_CLAIM_TTL_MS) return false;
+        fs.unlinkSync(claimPath);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+function removeStaleSpawnClaims(spawnMarkerPath: string, nowMs: number): void {
   const dir = path.dirname(spawnMarkerPath);
   const prefix = path.basename(spawnMarkerPath) + ".";
   let entries: string[] = [];
@@ -74,19 +96,26 @@ function removeStaleSpawnClaims(spawnMarkerPath: string, currentWindow: number):
   }
   for (const name of entries) {
     if (!name.startsWith(prefix)) continue;
-    const window = Number(name.slice(prefix.length));
-    if (Number.isFinite(window) && window < currentWindow - 1) {
-      try { fs.unlinkSync(path.join(dir, name)); } catch { }
-    }
+    const claimPath = path.join(dir, name);
+    try {
+      if (nowMs - fs.statSync(claimPath).mtimeMs > SPAWN_CLAIM_TTL_MS * 6) fs.unlinkSync(claimPath);
+    } catch { }
   }
 }
 
 function maybeSpawnDaemon(dataDir: string): void {
   const spawnMarkerPath = getSpawnMarkerPath();
-  if (!claimSpawnWindow(spawnMarkerPath)) {
-    debugLog("skipping daemon spawn — another shim claimed this 5s window");
+  const nowMs = Date.now();
+  const key = spawnClaimKey(dataDir, nowMs);
+  if (key === null) {
+    debugLog("skipping daemon spawn — a daemon is still booting");
     return;
   }
+  if (!claimSpawn(spawnMarkerPath, key, nowMs)) {
+    debugLog(`skipping daemon spawn — another shim already claimed respawn for ${key}`);
+    return;
+  }
+  removeStaleSpawnClaims(spawnMarkerPath, nowMs);
 
   const daemonPath = process.env.PRISM_DAEMON_PATH
     || path.join(path.dirname(fileURLToPath(import.meta.url)), "daemon.js");
@@ -226,7 +255,7 @@ async function main(): Promise<void> {
         maybeSpawnDaemon(dataDir);
       }
       await sleep(backoffMs);
-      backoffMs = Math.min(backoffMs * 2, 1000);
+      backoffMs = Math.min(backoffMs * 2, 250);
     }
   }
 }

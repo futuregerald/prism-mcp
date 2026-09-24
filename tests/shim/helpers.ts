@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,8 +16,34 @@ export function ensureShimBuilt(): void {
   }
 }
 
+const createdDataDirs = new Set<string>();
+
 export function freshDataDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "prs-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prs-"));
+  createdDataDirs.add(dir);
+  return dir;
+}
+
+export function daemonPidsForDataDir(dataDir: string): number[] {
+  let listing = "";
+  try {
+    listing = execFileSync("ps", ["-E", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  } catch {
+    return [];
+  }
+  return listing
+    .split("\n")
+    .filter(line => line.includes("dist/daemon.js") && (line.includes(`PRISM_DATA_DIR=${dataDir} `) || line.endsWith(`PRISM_DATA_DIR=${dataDir}`)))
+    .map(line => parseInt(line.trim().split(/\s+/)[0], 10))
+    .filter(pid => Number.isFinite(pid) && pid !== process.pid);
+}
+
+export async function terminateAllDaemonsForCreatedDataDirs(): Promise<void> {
+  for (const dir of createdDataDirs) {
+    for (const pid of daemonPidsForDataDir(dir)) {
+      await terminatePid(pid);
+    }
+  }
 }
 
 export interface EnvOverrides {
@@ -79,7 +105,7 @@ export function killProc(proc: ChildProcess, signal: NodeJS.Signals = "SIGTERM")
       return;
     }
     const timer = setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      try { proc.kill("SIGKILL"); } catch { }
     }, 3000);
     proc.once("exit", () => {
       clearTimeout(timer);
