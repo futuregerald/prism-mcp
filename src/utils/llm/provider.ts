@@ -23,6 +23,8 @@
  *     const llm = getLLMProvider();
  */
 
+export type EmbeddingPurpose = "document" | "query";
+
 export interface LLMProvider {
   /**
    * Generate text using the active LLM.
@@ -61,7 +63,9 @@ export interface LLMProvider {
    *
    * @param text Raw text to embed. Adapters are responsible for truncation.
    */
-  generateEmbedding(text: string): Promise<number[]>;
+  generateEmbedding(text: string, purpose?: EmbeddingPurpose): Promise<number[]>;
+
+  recommendedSimilarityThreshold?: number;
 
   /**
    * OPTIONAL — Generate a rich natural-language description of an image.

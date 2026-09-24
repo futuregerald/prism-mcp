@@ -1,6 +1,6 @@
 import { getSettingSync } from "../../../storage/configStorage.js";
 import { debugLog } from "../../logger.js";
-import type { LLMProvider } from "../provider.js";
+import type { LLMProvider, EmbeddingPurpose } from "../provider.js";
 
 const EMBEDDING_DIMS = 768;
 const MAX_EMBEDDING_CHARS = 8000;
@@ -29,7 +29,9 @@ export class LocalEmbeddingAdapter implements LLMProvider {
     );
   }
 
-  async generateEmbedding(text: string): Promise<number[]> {
+  readonly recommendedSimilarityThreshold = 0.5;
+
+  async generateEmbedding(text: string, purpose: EmbeddingPurpose = "document"): Promise<number[]> {
     if (!text || !text.trim()) {
       throw new Error("[LocalEmbeddingAdapter] generateEmbedding called with empty text");
     }
@@ -48,7 +50,8 @@ export class LocalEmbeddingAdapter implements LLMProvider {
       throw new Error("[LocalEmbeddingAdapter] Pipeline not initialized and no load error recorded");
     }
 
-    const result = await this.pipe(`search_document: ${inputText}`, { pooling: "mean", normalize: true });
+    const taskPrefix = purpose === "query" ? "search_query: " : "search_document: ";
+    const result = await this.pipe(`${taskPrefix}${inputText}`, { pooling: "mean", normalize: true });
     const tensorData = (result as { data?: Float32Array }).data;
     if (!tensorData || !(tensorData instanceof Float32Array)) {
       throw new Error(

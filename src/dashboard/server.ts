@@ -1010,7 +1010,7 @@ return false;}
             return res.end(JSON.stringify({ error: "LLM Provider not configured for semantic search. Configure an embedding provider in the Mind Palace dashboard." }));
           }
 
-          const queryEmbedding = await llm.generateEmbedding(queryText);
+          const queryEmbedding = await llm.generateEmbedding(queryText, "query");
 
           // We query limit + offset, then slice manually since the storage
           // layer interface limit parameter doesn't natively expose offset.

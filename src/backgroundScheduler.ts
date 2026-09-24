@@ -29,6 +29,7 @@ import {
   PRISM_GRAPH_PRUNE_MAX_PROJECTS_PER_SWEEP,
   PRISM_ACTR_ENABLED,
   PRISM_ACTR_ACCESS_LOG_RETENTION_DAYS,
+  PRISM_DEEP_PURGE_ENABLED,
 } from "./config.js";
 import { debugLog } from "./utils/logger.js";
 import { runWebScholar } from "./scholar/webScholar.js";
@@ -156,7 +157,7 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   enableTTLSweep: true,
   enableDecay: true,
   enableCompaction: true,
-  enableDeepPurge: true,
+  enableDeepPurge: PRISM_DEEP_PURGE_ENABLED,
   enableSdmFlush: true,
   enableEdgeSynthesis: true,
   purgeOlderThanDays: 30,

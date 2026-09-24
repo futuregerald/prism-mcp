@@ -375,6 +375,8 @@ export async function knowledgeForgetHandler(args: unknown) {
   };
 }
 
+const DEFAULT_SEARCH_SIMILARITY_THRESHOLD = 0.7;
+
 export async function sessionSearchMemoryHandler(args: unknown) {
   if (!isSessionSearchMemoryArgs(args)) {
     throw new Error("Invalid arguments for session_search_memory");
@@ -384,7 +386,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
     query,
     project,
     limit = 5,
-    similarity_threshold = 0.7,
+    similarity_threshold: requestedSimilarityThreshold,
     // Phase 1: enable_trace defaults to false for full backward compatibility.
     // When true, a MemoryTrace JSON block is appended as content[1].
     enable_trace = false,
@@ -392,6 +394,9 @@ export async function sessionSearchMemoryHandler(args: unknown) {
     context_boost = false,
     activation,
   } = args as any;
+
+  const similarity_threshold: number =
+    requestedSimilarityThreshold ?? getLLMProvider().recommendedSimilarityThreshold ?? DEFAULT_SEARCH_SIMILARITY_THRESHOLD;
 
   debugLog(
     `[session_search_memory] Semantic search: query="${query}", ` +
@@ -440,7 +445,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
   }
 
   try {
-    queryEmbedding = await getLLMProvider().generateEmbedding(effectiveQuery);
+    queryEmbedding = await getLLMProvider().generateEmbedding(effectiveQuery, "query");
   } catch (err) {
     return {
       content: [{
@@ -964,7 +969,7 @@ export async function sessionIntuitiveRecallHandler(
   try {
     const { decodeSdmVector } = await import("../sdm/sdmDecoder.js");
 
-    const queryVector = await getLLMProvider().generateEmbedding(args.query);
+    const queryVector = await getLLMProvider().generateEmbedding(args.query, "query");
     const targetVector = hasSdmEngine(args.project)
       ? getSdmEngine(args.project).read(new Float32Array(queryVector))
       : new Float32Array(queryVector.length);

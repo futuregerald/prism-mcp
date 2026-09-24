@@ -72,6 +72,7 @@ vi.mock("../../src/utils/llm/adapters/voyage.js", () => ({
 vi.mock("../../src/utils/llm/adapters/local.js", () => ({
   LocalEmbeddingAdapter: vi.fn(function (this: any) {
     this.generateEmbedding = vi.fn();
+    this.recommendedSimilarityThreshold = 0.5;
     this.generateText = vi.fn().mockRejectedValue(
       new Error("LocalEmbeddingAdapter does not support text generation")
     );
@@ -251,6 +252,18 @@ describe("LLM Provider Factory — Split Architecture", () => {
     expect(mockLocalEmbeddingAdapter).toHaveBeenCalledOnce();
     expect(GeminiAdapter).not.toHaveBeenCalled();
     infoSpy.mockRestore();
+  });
+
+  it("exposes the embedding adapter's recommended similarity threshold through the provider", () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockProviders("none", "local");
+    expect(getLLMProvider().recommendedSimilarityThreshold).toBe(0.5);
+    infoSpy.mockRestore();
+  });
+
+  it("leaves the recommended similarity threshold unset for providers that do not recommend one", () => {
+    mockProviders("gemini", "voyage");
+    expect(getLLMProvider().recommendedSimilarityThreshold).toBeUndefined();
   });
 
   // ── Singleton ─────────────────────────────────────────────────────────────

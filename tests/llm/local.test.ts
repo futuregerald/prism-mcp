@@ -132,6 +132,34 @@ describe("LocalEmbeddingAdapter", () => {
     expect(typeof vec[0]).toBe("number");
   });
 
+  it("prepends 'search_query: ' when the text is embedded as a query", async () => {
+    mockSettings();
+    const adapter = await makeAdapter();
+    await adapter.loadPromise;
+    await adapter.generateEmbedding("where is the lock file", "query");
+    expect(mockPipelineFn).toHaveBeenCalledWith(
+      "search_query: where is the lock file",
+      { pooling: "mean", normalize: true }
+    );
+  });
+
+  it("prepends 'search_document: ' when the text is embedded as a document", async () => {
+    mockSettings();
+    const adapter = await makeAdapter();
+    await adapter.loadPromise;
+    await adapter.generateEmbedding("a saved note", "document");
+    expect(mockPipelineFn).toHaveBeenCalledWith(
+      "search_document: a saved note",
+      { pooling: "mean", normalize: true }
+    );
+  });
+
+  it("recommends a 0.5 similarity threshold for search", async () => {
+    mockSettings();
+    const adapter = await makeAdapter();
+    expect(adapter.recommendedSimilarityThreshold).toBe(0.5);
+  });
+
   it("prepends 'search_document: ' prefix before calling the pipeline", async () => {
     mockSettings();
     const adapter = await makeAdapter();

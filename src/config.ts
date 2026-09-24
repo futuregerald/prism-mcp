@@ -218,6 +218,8 @@ export const WATCHDOG_LOOP_THRESHOLD = parseInt(
 // the Watchdog (different cadence: 12h vs 60s).
 export const PRISM_SCHEDULER_ENABLED =
   process.env.PRISM_SCHEDULER_ENABLED !== "false"; // Default: true
+export const PRISM_DEEP_PURGE_ENABLED =
+  process.env.PRISM_DEEP_PURGE_ENABLED === "true";
 export const PRISM_SCHEDULER_INTERVAL_MS = parseInt(
   process.env.PRISM_SCHEDULER_INTERVAL_MS || "43200000", 10  // 12 hours
 );
