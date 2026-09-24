@@ -85,7 +85,7 @@ const activeCompactions = new Set<string>();
 
 // ─── v0.4.0: Import server type for resource notifications ───
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { notifyResourceUpdate } from "../server.js";
+import { notifyResourceUpdate } from "../mcpServer.js";
 
 // ─── Security: Stored Prompt Injection Prevention ─────────────
 // SECURITY FIX: Sanitize all user-provided text before persistence.

@@ -75,7 +75,7 @@ const activeCompactions = new Set<string>();
 
 // ─── v0.4.0: Import server type for resource notifications ───
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { notifyResourceUpdate } from "../server.js";
+import { notifyResourceUpdate } from "../mcpServer.js";
 
 // ─── Save Ledger Handler ──────────────────────────────────────
 

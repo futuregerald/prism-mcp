@@ -181,7 +181,7 @@ vi.mock("../../src/utils/cognitiveMemory.js", () => ({
   computeEffectiveImportance: vi.fn(),
   updateLastAccessed: vi.fn(),
 }));
-vi.mock("../../src/server.js", () => ({ notifyResourceUpdate: vi.fn() }));
+vi.mock("../../src/mcpServer.js", () => ({ notifyResourceUpdate: vi.fn() }));
 
 // ─── Import the handler under test ──────────────────────────────
 const { sessionCognitiveRouteHandler } = await import("../../src/tools/graphHandlers.js");
