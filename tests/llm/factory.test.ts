@@ -261,6 +261,17 @@ describe("LLM Provider Factory — Split Architecture", () => {
     infoSpy.mockRestore();
   });
 
+  it("passes the embedding purpose through the tracing wrapper to the local adapter", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockProviders("none", "local");
+    const provider = getLLMProvider();
+    const localInstance = mockLocalEmbeddingAdapter.mock.instances[0] as unknown as { generateEmbedding: ReturnType<typeof vi.fn> };
+    localInstance.generateEmbedding.mockResolvedValue([0.1, 0.2]);
+    await provider.generateEmbedding("where is the lock file", "query");
+    expect(localInstance.generateEmbedding).toHaveBeenCalledWith("where is the lock file", "query");
+    infoSpy.mockRestore();
+  });
+
   it("leaves the recommended similarity threshold unset for providers that do not recommend one", () => {
     mockProviders("gemini", "voyage");
     expect(getLLMProvider().recommendedSimilarityThreshold).toBeUndefined();

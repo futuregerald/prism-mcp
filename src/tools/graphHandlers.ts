@@ -377,6 +377,14 @@ export async function knowledgeForgetHandler(args: unknown) {
 
 const DEFAULT_SEARCH_SIMILARITY_THRESHOLD = 0.7;
 
+function providerRecommendedSimilarityThreshold(): number | undefined {
+  try {
+    return getLLMProvider().recommendedSimilarityThreshold;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function sessionSearchMemoryHandler(args: unknown) {
   if (!isSessionSearchMemoryArgs(args)) {
     throw new Error("Invalid arguments for session_search_memory");
@@ -396,7 +404,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
   } = args as any;
 
   const similarity_threshold: number =
-    requestedSimilarityThreshold ?? getLLMProvider().recommendedSimilarityThreshold ?? DEFAULT_SEARCH_SIMILARITY_THRESHOLD;
+    requestedSimilarityThreshold ?? providerRecommendedSimilarityThreshold() ?? DEFAULT_SEARCH_SIMILARITY_THRESHOLD;
 
   debugLog(
     `[session_search_memory] Semantic search: query="${query}", ` +
@@ -493,7 +501,7 @@ export async function sessionSearchMemoryHandler(args: unknown) {
           (project ? `Project: ${project}\n` : "") +
           `Similarity threshold: ${similarity_threshold}\n\n` +
           `Tips:\n` +
-          `• Lower the similarity_threshold (e.g., 0.5) for broader results\n` +
+          `• Lower the similarity_threshold (e.g., ${Math.max(0, similarity_threshold - 0.15).toFixed(2)}) for broader results\n` +
           `• Try knowledge_search for keyword-based matching\n` +
           `• Ensure sessions have been saved with embeddings (requires a configured embedding provider)`,
       }];

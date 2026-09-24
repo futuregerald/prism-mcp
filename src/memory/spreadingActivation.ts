@@ -10,7 +10,8 @@ export async function applySpreadingActivation(
   db: Client,
   anchors: SemanticSearchResult[],
   options: SpreadingActivationOptions,
-  userId: string
+  userId: string,
+  project?: string | null
 ): Promise<SemanticSearchResult[]> {
   if (!options.enabled || anchors.length === 0) return anchors;
 
@@ -100,9 +101,9 @@ export async function applySpreadingActivation(
     const missingQuery = `
       SELECT id, project, summary, session_date, decisions, files_changed
       FROM session_ledger
-      WHERE id IN (${placeholders}) AND deleted_at IS NULL AND user_id = ?
+      WHERE id IN (${placeholders}) AND deleted_at IS NULL AND archived_at IS NULL AND user_id = ?${project ? " AND project = ?" : ""}
     `;
-    const missingRes = await db.execute({ sql: missingQuery, args: [...missingIds, userId] });
+    const missingRes = await db.execute({ sql: missingQuery, args: project ? [...missingIds, userId, project] : [...missingIds, userId] });
     
     for (const row of missingRes.rows) {
       anchorMap.set(row.id as string, {

@@ -1199,7 +1199,8 @@ export const DEEP_STORAGE_PURGE_TOOL: Tool = {
     "Entries without compressed blobs are NEVER touched. " +
     "Use dry_run=true to preview the impact before executing. " +
     "On local SQLite, purged entries drop out of semantic search (session_search_memory) until they are re-embedded, " +
-    "so the scheduled purge is off unless PRISM_DEEP_PURGE_ENABLED=true.\n\n" +
+    "so the scheduled purge is off unless PRISM_DEEP_PURGE_ENABLED=true. " +
+    "It only frees vector storage and deletes no memory content, so it is not a retention or privacy control.\n\n" +
     "**When to use:** After running TurboQuant backfill (session_backfill_embeddings), " +
     "call this tool to reclaim disk space from legacy float32 vectors that are no longer " +
     "needed for search.\n\n" +
